@@ -1,0 +1,178 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Windows ARM64 Installer Release
+
+# This workflow builds the Windows-on-ARM installer and publishes it.
+#
+# Triggers:
+#   - Manual dispatch from the Actions tab (workflow_dispatch), with an
+#     optional "draft_release" input to decide whether to also create a
+#     draft GitHub Release with the installer attached.
+#   - Pushes of tags matching `arm64-v*` or `v*-arm64` — those create a
+#     real (non-draft) GitHub Release and attach the installer.
+#
+# The actual build is delegated to KDE Craft via the NullsoftInstallerPackager,
+# which is the same machinery the x64 release builds use. The only difference
+# here is the target ABI and the fact that this is the first ARM64 attempt,
+# so blueprint breakage is expected on early runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: 'Also create a draft GitHub Release and attach the installer'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'arm64-v*'
+      - 'v*-arm64'
+
+permissions:
+  contents: write # needed to create a GitHub Release
+
+jobs:
+  build-installer:
+    name: Build and Package Windows ARM64 Installer
+    runs-on: windows-11-arm
+    env:
+      CRAFT_TARGET: windows-msvc2022_arm64-cl
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+          architecture: 'arm64'
+
+      - name: Install Craft Master with Nextcloud Client Deps
+        shell: pwsh
+        run: |
+          & cmd /C "git clone -q --depth=1 https://invent.kde.org/packaging/craftmaster.git ${{ env.CRAFT_MASTER_LOCATION }} 2>&1"
+
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|master|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|master|"
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Install inkscape
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          choco install inkscape --no-progress -y
+
+      - name: Setup PATH
+        shell: pwsh
+        run: |
+          echo "${{ github.workspace }}\${{ env.CRAFT_TARGET }}\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile nextcloud-client
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --src-dir ${{ github.workspace }} nextcloud-client
+
+      - name: Package installer (NullsoftInstallerPackager)
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          # --package runs the PackageType configured in craftmaster.ini
+          # (NullsoftInstallerPackager) against the already-built tree.
+          craft --src-dir ${{ github.workspace }} --package nextcloud-client
+
+      - name: Locate produced installer
+        id: find_installer
+        shell: pwsh
+        run: |
+          # Craft drops built packages under <target>/tmp or <target>/build/.../image.
+          # We scan broadly and pick the newest .exe/.msi that looks like an installer.
+          $candidates = Get-ChildItem -Path "${{ github.workspace }}\${{ env.CRAFT_TARGET }}" -Recurse -Include *.exe,*.msi -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match '(?i)nextcloud.*(setup|installer|arm64|\.msi$)' } |
+                        Sort-Object LastWriteTime -Descending
+
+          if ($candidates.Count -eq 0) {
+              Write-Error "No installer artifact found. Dumping candidate directories for debugging:"
+              Get-ChildItem -Path "${{ github.workspace }}\${{ env.CRAFT_TARGET }}" -Recurse -Include *.exe,*.msi -ErrorAction SilentlyContinue |
+                  Select-Object FullName, Length, LastWriteTime |
+                  Format-Table -AutoSize
+              exit 1
+          }
+
+          $installer = $candidates[0]
+          Write-Host "Selected installer: $($installer.FullName)"
+          "installer_path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "installer_name=$($installer.Name)"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload installer as workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextcloud-windows-arm64-installer
+          path: ${{ steps.find_installer.outputs.installer_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          name: Nextcloud Desktop Windows ARM64 ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+          files: ${{ steps.find_installer.outputs.installer_path }}
+          body: |
+            # Nextcloud Desktop for Windows on ARM64
+
+            **Experimental** native ARM64 build of the Nextcloud Desktop client.
+
+            ## What is this?
+
+            A native ARM64 installer for Windows-on-ARM devices (Snapdragon X Elite,
+            Surface Pro 11, Windows Dev Kit 2023, etc.). Running this instead of
+            the standard x64 installer avoids the x64-emulation overhead on those
+            machines.
+
+            ## Installation
+
+            Download the `.exe` installer below and run it. It will install into
+            `Program Files` and register the Explorer shell extension.
+
+            ## Status
+
+            This is the first ARM64 build. Please file an issue if you hit
+            crashes, missing features vs the x64 build, or shell-integration
+            problems.
+
+      - name: Create draft GitHub Release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.draft_release == true
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          name: "Nextcloud Desktop Windows ARM64 (dev build ${{ github.sha }})"
+          tag_name: "arm64-dev-${{ github.run_number }}"
+          draft: true
+          prerelease: true
+          generate_release_notes: false
+          files: ${{ steps.find_installer.outputs.installer_path }}
+          body: |
+            Unattended development build produced by manual workflow dispatch
+            from commit ${{ github.sha }} on branch `${{ github.ref_name }}`.
+
+            This is a **draft** release. Review and publish manually.
