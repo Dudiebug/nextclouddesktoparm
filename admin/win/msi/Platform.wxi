@@ -14,7 +14,11 @@
         https://www.howtobuildsoftware.com/index.php/how-do/1oQ/wix-detect-if-32-or-64-bit-windows-and-define-var
     -->
 
-    <?if $(var.Platform) = x64 ?>
+    <?if $(var.Platform) = arm64 ?>
+    <?define PlatformBitness = "(ARM64)" ?>
+    <?define PlatformWin64 = "yes" ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+    <?elseif $(var.Platform) = x64 ?>
     <?define PlatformBitness = "(64-bit)" ?>
     <?define PlatformWin64 = "yes" ?>
     <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
 # SPDX-License-Identifier: GPL-2.0-or-later
-if(CMAKE_SIZEOF_VOID_P MATCHES 4)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$")
+    set(MSI_BUILD_ARCH arm64)
+elseif(CMAKE_SIZEOF_VOID_P MATCHES 4)
     set(MSI_BUILD_ARCH x86)
 else()
     set(MSI_BUILD_ARCH x64)
