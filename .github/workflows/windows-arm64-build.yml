@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
+          architecture: 'arm64'
+
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
         run: |
@@ -37,8 +39,13 @@ jobs:
 
       - name: Install inkscape
         shell: pwsh
+        # Inkscape's chocolatey package may not have a native ARM64 build; the
+        # x64 MSI runs under Windows-on-ARM emulation, which is fine for the
+        # build-time icon conversion step. If install fails for any reason we
+        # still want the job to proceed so we can see later failures.
+        continue-on-error: true
         run: |
-          choco install inkscape
+          choco install inkscape --no-progress -y
 
       - name: Setup PATH
         shell: pwsh
