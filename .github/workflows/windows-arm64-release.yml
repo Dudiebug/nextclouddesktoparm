@@ -63,7 +63,7 @@ jobs:
       - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
         # We pre-clone KDE Craft into the same path craftmaster would use
-        # and apply three local patches against the pinned revision before
+        # and apply four local patches against the pinned revision before
         # craftmaster ever runs:
         #
         # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
@@ -95,7 +95,17 @@ jobs:
         #    Detect the ARM64 layout by probing for usr\bin and return a
         #    path one level shifted so the contract still holds.
         #
-        # After applying all three patches we strip the `CraftRevision` line
+        # 4. blueprints/dev-utils/perl/perl.py — extend the CRAFT_WIN64
+        #    ternary to include arm64. Perl 5.40's win32/Makefile already
+        #    has native ARM64 support (it sets WIN64=define when
+        #    PROCESSOR_ARCHITECTURE is AMD64, IA64, or ARM64) but only
+        #    when WIN64 is empty so the auto-detect block runs. The
+        #    blueprint forces WIN64=undef for any non-x86_64 target, which
+        #    under arm64 produces a 64-bit ARM64 miniperl.exe compiled
+        #    with 32-bit type assumptions; the resulting binary crashes
+        #    with 0xc0000005 the moment perl tries to use it.
+        #
+        # After applying all four patches we strip the `CraftRevision` line
         # from the workspace copy of craftmaster.ini so the subsequent
         # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
         # craft-clone, which would clobber the in-place edits.
@@ -129,11 +139,18 @@ jobs:
               exit 1
           }
 
+          $perlPath = Join-Path $craftClone "blueprints\dev-utils\perl\perl.py"
+          if (-not (Test-Path $perlPath)) {
+              Write-Error "perl.py not found at $perlPath"
+              exit 1
+          }
+
           $patchScript = @'
           import sys, re
           helper_path = sys.argv[1]
           zlib_path   = sys.argv[2]
           git_path    = sys.argv[3]
+          perl_path   = sys.argv[4]
 
           # Patch 1: add ARM64 entries to the architectures dicts in
           # CraftSetupHelper.getMSVCEnv.
@@ -213,11 +230,30 @@ jobs:
           with open(git_path, 'w', encoding='utf-8', newline='') as f:
               f.write(s.replace(old_block, new_block))
           print(f'Patched {git_path}: locateGit() handles ARM64 Git for Windows layout')
+
+          # Patch 4: dev-utils/perl/perl.py CRAFT_WIN64 — Perl 5.40's win32/Makefile
+          # already handles ARM64 (sets WIN64=define when PROCESSOR_ARCHITECTURE is
+          # AMD64, IA64, or ARM64), but only when WIN64 is empty so its auto-detect
+          # block runs. The Craft blueprint forces WIN64=undef for any non-x86_64
+          # target, which under arm64 produces a 64-bit ARM64 miniperl.exe compiled
+          # with 32-bit type assumptions; the resulting binary crashes with
+          # 0xc0000005 the moment perl tries to use it. Extend the 64-bit branch
+          # to include arm64 so the Makefile can self-configure.
+          with open(perl_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old_perl = '"CRAFT_WIN64": "" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64 else "undef",'
+          new_perl = '"CRAFT_WIN64": "" if CraftCore.compiler.architecture in (CraftCompiler.Architecture.x86_64, CraftCompiler.Architecture.arm64) else "undef",'
+          if old_perl not in s:
+              print('ERROR: could not find CRAFT_WIN64 ternary in perl.py', file=sys.stderr)
+              sys.exit(1)
+          with open(perl_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old_perl, new_perl))
+          print(f'Patched {perl_path}: CRAFT_WIN64 empty for arm64 (lets Makefile auto-detect)')
           '@
 
           $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
           Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
-          python $patchPath $helperPath $zlibPath $gitPath
+          python $patchPath $helperPath $zlibPath $gitPath $perlPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Strip CraftRevision from the workspace copy of craftmaster.ini
@@ -233,6 +269,8 @@ jobs:
           Select-String -Path $zlibPath -Pattern "github\.com/madler/zlib" | ForEach-Object { Write-Host $_ }
           Write-Host "--- Verifying locateGit() ARM64 handling in git.py ---"
           Select-String -Path $gitPath -Pattern "binDir\.parent\.parent" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying CRAFT_WIN64 arm64 handling in perl.py ---"
+          Select-String -Path $perlPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
