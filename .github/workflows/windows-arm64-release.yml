@@ -63,7 +63,7 @@ jobs:
       - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
         # We pre-clone KDE Craft into the same path craftmaster would use
-        # and apply five local patches against the pinned revision before
+        # and apply six local patches against the pinned revision before
         # craftmaster ever runs:
         #
         # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
@@ -116,7 +116,20 @@ jobs:
         #    though miniperl.exe is right there. Putting the perl source
         #    root on PATH lets the bare name resolve via PATH lookup.
         #
-        # After applying all five patches we strip the `CraftRevision` line
+        # 6. blueprints/libs/openssl/openssl.py — extend the Configure
+        #    target ternary to recognise arm64. The upstream blueprint
+        #    only knows about x86_64 (VC-WIN64A) and falls back to
+        #    VC-WIN32 for everything else, so on a Windows ARM64 host
+        #    OpenSSL gets configured for 32-bit x86: Configure picks the
+        #    x86 perlasm modules, the C sources are built with
+        #    -DAES_ASM/-DOPENSSL_IA32_SSE2/-DSHA1_ASM/etc., and Configure
+        #    emits nasm rules for x86 .asm files. The resulting object
+        #    files cannot be linked with the rest of the (correctly
+        #    arm64) build. OpenSSL ships a proper VC-WIN64-ARM target
+        #    that uses the ARM64 .S perlasm modules, so select it
+        #    explicitly when CraftCore.compiler.architecture is arm64.
+        #
+        # After applying all six patches we strip the `CraftRevision` line
         # from the workspace copy of craftmaster.ini so the subsequent
         # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
         # craft-clone, which would clobber the in-place edits.
@@ -156,12 +169,19 @@ jobs:
               exit 1
           }
 
+          $opensslPath = Join-Path $craftClone "blueprints\libs\openssl\openssl.py"
+          if (-not (Test-Path $opensslPath)) {
+              Write-Error "openssl.py not found at $opensslPath"
+              exit 1
+          }
+
           $patchScript = @'
           import sys, re
           helper_path = sys.argv[1]
           zlib_path   = sys.argv[2]
           git_path    = sys.argv[3]
           perl_path   = sys.argv[4]
+          openssl_path = sys.argv[5]
 
           # Patch 1: add ARM64 entries to the architectures dicts in
           # CraftSetupHelper.getMSVCEnv.
@@ -296,11 +316,44 @@ jobs:
           with open(perl_path, 'w', encoding='utf-8', newline='') as f:
               f.write(s.replace(old_globenv, new_globenv))
           print(f'Patched {perl_path}: _globEnv adds sourceDir to PATH for bare-miniperl recipe')
+
+          # Patch 6: libs/openssl/openssl.py — extend the Configure target
+          # ternary to recognise arm64. The upstream blueprint only knows
+          # about x86_64 (VC-WIN64A) and falls back to VC-WIN32 for any
+          # other architecture, so on a Windows ARM64 host OpenSSL ends up
+          # configured for 32-bit x86: the C sources are built with
+          # -DAES_ASM/-DOPENSSL_IA32_SSE2/-DSHA1_ASM/etc. and Configure
+          # emits nasm rules for x86 .asm files. The resulting object
+          # files cannot be linked into the otherwise-arm64 build. OpenSSL
+          # ships a proper VC-WIN64-ARM target that uses the ARM64 .S
+          # perlasm modules, so select it explicitly for arm64.
+          with open(openssl_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old_openssl = '                "VC-WIN64A" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64 else "VC-WIN32",\n'
+          new_openssl = (
+              '                # Pick the OpenSSL Configure target that matches the host arch.\n'
+              '                # The upstream blueprint only knows about x86_64 (VC-WIN64A) and\n'
+              '                # falls back to VC-WIN32 for everything else, which on a Windows\n'
+              '                # ARM64 host produces a build configured for 32-bit x86 (the C\n'
+              '                # sources get compiled with -DAES_ASM/-DOPENSSL_IA32_SSE2/etc.\n'
+              '                # and Configure emits nasm rules for x86 .asm files). OpenSSL\n'
+              '                # ships a proper VC-WIN64-ARM target that uses the ARM64 .S\n'
+              '                # perlasm modules, so select it for arm64.\n'
+              '                ("VC-WIN64A" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64\n'
+              '                 else "VC-WIN64-ARM" if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64\n'
+              '                 else "VC-WIN32"),\n'
+          )
+          if old_openssl not in s:
+              print('ERROR: could not find VC-WIN64A/VC-WIN32 ternary in openssl.py', file=sys.stderr)
+              sys.exit(1)
+          with open(openssl_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old_openssl, new_openssl))
+          print(f'Patched {openssl_path}: openssl Configure target VC-WIN64-ARM for arm64')
           '@
 
           $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
           Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
-          python $patchPath $helperPath $zlibPath $gitPath $perlPath
+          python $patchPath $helperPath $zlibPath $gitPath $perlPath $opensslPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Strip CraftRevision from the workspace copy of craftmaster.ini
@@ -320,6 +373,8 @@ jobs:
           Select-String -Path $perlPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
           Write-Host "--- Verifying _globEnv sourceDir on PATH in perl.py ---"
           Select-String -Path $perlPath -Pattern "self\.sourceDir\(\)" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying VC-WIN64-ARM target in openssl.py ---"
+          Select-String -Path $opensslPath -Pattern "VC-WIN64-ARM" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
