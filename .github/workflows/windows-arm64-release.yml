@@ -10,6 +10,9 @@ name: Windows ARM64 Installer Release
 #     draft GitHub Release with the installer attached.
 #   - Pushes of tags matching `arm64-v*` or `v*-arm64` — those create a
 #     real (non-draft) GitHub Release and attach the installer.
+#   - Pushes to the `claude/arm-windows-build-dh7Rx` development branch —
+#     a workaround path (see comment on the trigger below) that creates a
+#     prerelease tagged `arm64-v33.1.0-alpha1` with the installer attached.
 #
 # The actual build is delegated to KDE Craft via the NullsoftInstallerPackager,
 # which is the same machinery the x64 release builds use. The only difference
@@ -27,6 +30,14 @@ on:
     tags:
       - 'arm64-v*'
       - 'v*-arm64'
+    branches:
+      # Workaround trigger: the sandbox that drives this branch cannot push
+      # annotated tags through its git proxy (tag pushes return HTTP 403), and
+      # it also has no working workflow_dispatch path. Firing the release
+      # workflow on pushes to the development branch itself lets us produce
+      # a first ARM64 installer for download and review. This entry can be
+      # removed once the branch is merged or a real tag push is possible.
+      - 'claude/arm-windows-build-dh7Rx'
 
 permissions:
   contents: write # needed to create a GitHub Release
@@ -176,3 +187,50 @@ jobs:
             from commit ${{ github.sha }} on branch `${{ github.ref_name }}`.
 
             This is a **draft** release. Review and publish manually.
+
+      - name: Create prerelease GitHub Release (dh7Rx branch push workaround)
+        # Fires when the workflow is triggered by a push to the dev branch
+        # because the sandbox cannot push an `arm64-v*` tag directly. A fixed
+        # prerelease tag is created (or updated) at the pushed commit so the
+        # installer surfaces as a normal, downloadable GitHub Release.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/claude/arm-windows-build-dh7Rx'
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          name: "Nextcloud Desktop Windows ARM64 arm64-v33.1.0-alpha1"
+          tag_name: "arm64-v33.1.0-alpha1"
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+          files: ${{ steps.find_installer.outputs.installer_path }}
+          body: |
+            # Nextcloud Desktop for Windows on ARM64 — experimental, untested
+
+            **Experimental** first native ARM64 build of the Nextcloud Desktop client.
+
+            This release was produced automatically from a push to the
+            `claude/arm-windows-build-dh7Rx` development branch because the
+            sandbox that generated the build did not have permission to push
+            the `arm64-v33.1.0-alpha1` annotated tag directly. The tag above
+            was created by the release action at the built commit.
+
+            ## What is this?
+
+            A native ARM64 installer for Windows-on-ARM devices (Snapdragon X Elite,
+            Surface Pro 11, Windows Dev Kit 2023, etc.). Running this instead of
+            the standard x64 installer avoids x64-emulation overhead on those
+            machines.
+
+            ## Installation
+
+            Download the `.exe` installer below and run it. It will install into
+            `Program Files` and register the Explorer shell extension.
+
+            ## Status
+
+            **Not yet verified on hardware.** This is the first ARM64 build ever
+            produced for this project and has not been installed or launched on
+            a real device. Please file an issue if you hit crashes, missing
+            features vs the x64 build, or shell-integration problems.
+
+            Built from commit ${{ github.sha }}.
