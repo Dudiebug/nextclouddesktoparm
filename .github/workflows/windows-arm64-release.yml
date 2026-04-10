@@ -60,22 +60,34 @@ jobs:
           python-version: '3.12'
           architecture: 'arm64'
 
-      - name: Pre-clone and patch KDE Craft for ARM64
+      - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
-        # KDE Craft (both the pinned revision and current master) does not
-        # have a native-ARM64 entry in CraftSetupHelper.getMSVCEnv's
-        # `architectures` dict, so any craft invocation on an ARM64 host
-        # crashes at module-import time with
-        #   KeyError: <Architecture.arm64: 40>
+        # We pre-clone KDE Craft into the same path craftmaster would use
+        # and apply two local patches against the pinned revision before
+        # craftmaster ever runs:
         #
-        # Until upstream adds ARM64 support, we pre-clone Craft ourselves
-        # into the same path craftmaster would clone it to, apply a minimal
-        # patch that adds the missing arm64 dict entries (native = "arm64",
-        # cross = "x86_arm64" — the correct vcvarsall.bat arguments), and
-        # then strip CraftRevision from the workspace copy of
-        # craftmaster.ini so that craftmaster does NOT re-run
-        # `git checkout -f` on the craft-clone directory — that would
-        # clobber our patch.
+        # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
+        #    to the `architectures` dict in `getMSVCEnv`. Without this,
+        #    every craft invocation on a windows-11-arm host crashes at
+        #    module-import time with `KeyError: <Architecture.arm64: 40>`,
+        #    because neither the pinned revision nor current upstream
+        #    master has any ARM64 entry. Native gets "arm64", non-native
+        #    gets "x86_arm64" — the documented vcvarsall.bat arguments.
+        #
+        # 2. blueprints/libs/zlib/zlib.py — replace the stale
+        #    `https://www.zlib.net/zlib-{ver}.tar.xz` URL with
+        #    `https://github.com/madler/zlib/releases/download/v{ver}/zlib-{ver}.tar.xz`.
+        #    zlib.net moves old releases to /fossils/ once a newer version
+        #    ships, which 404s the blueprint's hard-coded top-level path.
+        #    The GitHub release asset is byte-for-byte identical to the
+        #    zlib.net tarball (verified: SHA256 matches the digest the
+        #    blueprint already declares — 38ef96b8...e32 — so no other
+        #    fields need touching).
+        #
+        # After applying both patches we strip the `CraftRevision` line
+        # from the workspace copy of craftmaster.ini so the subsequent
+        # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
+        # craft-clone, which would clobber the in-place edits.
         run: |
           $workspace  = "${{ github.workspace }}"
           $craftClone = Join-Path $workspace "craft-clone"
@@ -94,10 +106,20 @@ jobs:
               exit 1
           }
 
+          $zlibPath = Join-Path $craftClone "blueprints\libs\zlib\zlib.py"
+          if (-not (Test-Path $zlibPath)) {
+              Write-Error "zlib.py not found at $zlibPath"
+              exit 1
+          }
+
           $patchScript = @'
           import sys, re
-          p = sys.argv[1]
-          with open(p, 'r', encoding='utf-8', newline='') as f:
+          helper_path = sys.argv[1]
+          zlib_path   = sys.argv[2]
+
+          # Patch 1: add ARM64 entries to the architectures dicts in
+          # CraftSetupHelper.getMSVCEnv.
+          with open(helper_path, 'r', encoding='utf-8', newline='') as f:
               s = f.read()
           s_new = re.sub(
               r'(CraftCore\.compiler\.Architecture\.x86_64: "amd64",\r?\n)(\s*\})',
@@ -115,18 +137,31 @@ jobs:
           if s_new2 == s_new:
               print('ERROR: could not patch non-native architectures dict', file=sys.stderr)
               sys.exit(1)
-          with open(p, 'w', encoding='utf-8', newline='') as f:
+          with open(helper_path, 'w', encoding='utf-8', newline='') as f:
               f.write(s_new2)
-          print(f'Patched {p} with ARM64 architecture entries')
+          print(f'Patched {helper_path}: added ARM64 architecture entries')
+
+          # Patch 2: rewrite the dead zlib.net URL in the zlib blueprint
+          # to a GitHub release asset that has the same SHA256.
+          with open(zlib_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old = 'f"https://www.zlib.net/zlib-{ver}.tar.xz"'
+          new = 'f"https://github.com/madler/zlib/releases/download/v{ver}/zlib-{ver}.tar.xz"'
+          if old not in s:
+              print('ERROR: could not find zlib.net URL literal in zlib.py', file=sys.stderr)
+              sys.exit(1)
+          with open(zlib_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old, new))
+          print(f'Patched {zlib_path}: zlib.net -> github.com release asset')
           '@
 
-          $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_arm64.py"
+          $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
           Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
-          python $patchPath $helperPath
+          python $patchPath $helperPath $zlibPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Strip CraftRevision from the workspace copy of craftmaster.ini
-          # so the subsequent craftmaster run does not clobber the patch
+          # so the subsequent craftmaster run does not clobber the patches
           # with `git checkout -f`.
           $ini = Join-Path $workspace "craftmaster.ini"
           (Get-Content $ini) | Where-Object { $_ -notmatch '^\s*CraftRevision\s*=' } | Set-Content $ini
@@ -134,6 +169,8 @@ jobs:
 
           Write-Host "--- Verifying arm64 entries are present in CraftSetupHelper.py ---"
           Select-String -Path $helperPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying patched zlib URL in zlib.py ---"
+          Select-String -Path $zlibPath -Pattern "github\.com/madler/zlib" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
