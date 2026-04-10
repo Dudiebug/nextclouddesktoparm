@@ -63,7 +63,7 @@ jobs:
       - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
         # We pre-clone KDE Craft into the same path craftmaster would use
-        # and apply four local patches against the pinned revision before
+        # and apply five local patches against the pinned revision before
         # craftmaster ever runs:
         #
         # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
@@ -105,7 +105,18 @@ jobs:
         #    with 32-bit type assumptions; the resulting binary crashes
         #    with 0xc0000005 the moment perl tries to use it.
         #
-        # After applying all four patches we strip the `CraftRevision` line
+        # 5. blueprints/dev-utils/perl/perl.py — extend _globEnv() to add
+        #    self.sourceDir() to PATH. Perl 5.40's win32/Makefile recipe
+        #    for ..\git_version.h is `cd .. && miniperl -Ilib
+        #    make_patchnum.pl && cd win32`. It uses bare `miniperl`
+        #    rather than $(MINIPERL), and assumes cmd.exe will find
+        #    miniperl.exe in the current directory after the cd. Modern
+        #    Windows cmd.exe does not search the cwd for executables, so
+        #    the recipe fails with "'miniperl' is not recognized" even
+        #    though miniperl.exe is right there. Putting the perl source
+        #    root on PATH lets the bare name resolve via PATH lookup.
+        #
+        # After applying all five patches we strip the `CraftRevision` line
         # from the workspace copy of craftmaster.ini so the subsequent
         # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
         # craft-clone, which would clobber the in-place edits.
@@ -246,9 +257,45 @@ jobs:
           if old_perl not in s:
               print('ERROR: could not find CRAFT_WIN64 ternary in perl.py', file=sys.stderr)
               sys.exit(1)
+          s = s.replace(old_perl, new_perl)
           with open(perl_path, 'w', encoding='utf-8', newline='') as f:
-              f.write(s.replace(old_perl, new_perl))
+              f.write(s)
           print(f'Patched {perl_path}: CRAFT_WIN64 empty for arm64 (lets Makefile auto-detect)')
+
+          # Patch 5: dev-utils/perl/perl.py _globEnv() — Perl 5.40's win32/Makefile
+          # recipe for ..\git_version.h is "cd .. && miniperl -Ilib make_patchnum.pl
+          # && cd win32". It uses bare "miniperl" rather than $(MINIPERL), and
+          # assumes cmd.exe will find miniperl.exe in the current directory after
+          # the cd. Modern Windows cmd.exe does not search the cwd for executables,
+          # so the recipe fails with "'miniperl' is not recognized" even though
+          # miniperl.exe is right there. Put the perl source root on PATH so the
+          # bare name resolves via PATH lookup.
+          old_globenv = (
+              '    def _globEnv(self):\n'
+              '        env = {}\n'
+              '        if CraftCore.compiler.isMSVC():\n'
+              '            env = {"PATH": f"{self.blueprintDir()};{os.environ[\'PATH\']}"}\n'
+              '        return env\n'
+          )
+          new_globenv = (
+              '    def _globEnv(self):\n'
+              '        env = {}\n'
+              '        if CraftCore.compiler.isMSVC():\n'
+              '            # Perl 5.40 win32/Makefile rule for ..\\git_version.h runs\n'
+              '            # "cd .. && miniperl -Ilib make_patchnum.pl" with a bare\n'
+              '            # "miniperl" name. Modern cmd.exe does not search the cwd\n'
+              '            # for executables, so even though miniperl.exe is right\n'
+              '            # there it is not found. Put the perl source root on PATH\n'
+              '            # so the bare name resolves via PATH lookup.\n'
+              '            env = {"PATH": f"{self.sourceDir()};{self.blueprintDir()};{os.environ[\'PATH\']}"}\n'
+              '        return env\n'
+          )
+          if old_globenv not in s:
+              print('ERROR: could not find _globEnv() block in perl.py', file=sys.stderr)
+              sys.exit(1)
+          with open(perl_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old_globenv, new_globenv))
+          print(f'Patched {perl_path}: _globEnv adds sourceDir to PATH for bare-miniperl recipe')
           '@
 
           $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
@@ -271,6 +318,8 @@ jobs:
           Select-String -Path $gitPath -Pattern "binDir\.parent\.parent" | ForEach-Object { Write-Host $_ }
           Write-Host "--- Verifying CRAFT_WIN64 arm64 handling in perl.py ---"
           Select-String -Path $perlPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying _globEnv sourceDir on PATH in perl.py ---"
+          Select-String -Path $perlPath -Pattern "self\.sourceDir\(\)" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
