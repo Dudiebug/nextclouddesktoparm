@@ -22,6 +22,73 @@ jobs:
           python-version: '3.12'
           architecture: 'arm64'
 
+      - name: Pre-clone and patch KDE Craft for ARM64
+        shell: pwsh
+        # See windows-arm64-release.yml for the full explanation. In short:
+        # upstream KDE Craft has no native-ARM64 entry in the `architectures`
+        # dict inside CraftSetupHelper.getMSVCEnv, so any craft invocation
+        # on an ARM64 host crashes at module-import time with
+        #   KeyError: <Architecture.arm64: 40>
+        # Until upstream adds ARM64 support we pre-clone Craft into the
+        # path craftmaster would use, patch the dict in place, and strip
+        # CraftRevision from the workspace copy of craftmaster.ini so the
+        # subsequent `git checkout -f` does not clobber the patch.
+        run: |
+          $workspace  = "${{ github.workspace }}"
+          $craftClone = Join-Path $workspace "craft-clone"
+          $pinnedRev  = "d9d06ff743183104bc50698e376807976fa0e460"
+
+          if (-not (Test-Path $craftClone)) {
+              git clone https://invent.kde.org/packaging/craft.git $craftClone
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          git -C $craftClone checkout -f $pinnedRev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $helperPath = Join-Path $craftClone "bin\CraftSetupHelper.py"
+          if (-not (Test-Path $helperPath)) {
+              Write-Error "CraftSetupHelper.py not found at $helperPath"
+              exit 1
+          }
+
+          $patchScript = @'
+          import sys, re
+          p = sys.argv[1]
+          with open(p, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          s_new = re.sub(
+              r'(CraftCore\.compiler\.Architecture\.x86_64: "amd64",\r?\n)(\s*\})',
+              r'\1                CraftCore.compiler.Architecture.arm64: "arm64",\n\2',
+              s, count=1,
+          )
+          if s_new == s:
+              print('ERROR: could not patch native architectures dict', file=sys.stderr)
+              sys.exit(1)
+          s_new2 = re.sub(
+              r'(CraftCore\.compiler\.Architecture\.x86_64: "x86_amd64",\r?\n)(\s*\})',
+              r'\1                CraftCore.compiler.Architecture.arm64: "x86_arm64",\n\2',
+              s_new, count=1,
+          )
+          if s_new2 == s_new:
+              print('ERROR: could not patch non-native architectures dict', file=sys.stderr)
+              sys.exit(1)
+          with open(p, 'w', encoding='utf-8', newline='') as f:
+              f.write(s_new2)
+          print(f'Patched {p} with ARM64 architecture entries')
+          '@
+
+          $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_arm64.py"
+          Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
+          python $patchPath $helperPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $ini = Join-Path $workspace "craftmaster.ini"
+          (Get-Content $ini) | Where-Object { $_ -notmatch '^\s*CraftRevision\s*=' } | Set-Content $ini
+          Write-Host "Stripped CraftRevision from $ini"
+
+          Write-Host "--- Verifying arm64 entries are present in CraftSetupHelper.py ---"
+          Select-String -Path $helperPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
+
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
         run: |
