@@ -63,7 +63,7 @@ jobs:
       - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
         # We pre-clone KDE Craft into the same path craftmaster would use
-        # and apply two local patches against the pinned revision before
+        # and apply three local patches against the pinned revision before
         # craftmaster ever runs:
         #
         # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
@@ -84,7 +84,18 @@ jobs:
         #    blueprint already declares — 38ef96b8...e32 — so no other
         #    fields need touching).
         #
-        # After applying both patches we strip the `CraftRevision` line
+        # 3. blueprints/dev-utils/_windows/git/git.py — fix locateGit() so
+        #    it tolerates the Git for Windows ARM64 (clangarm64) layout.
+        #    Legacy x64 Git for Windows lays git.exe out at Git\bin\git.exe,
+        #    so locateGit().parent is the MSYS root containing usr\bin.
+        #    The ARM64 build instead uses Git\clangarm64\bin\git.exe and
+        #    keeps the shared MSYS userland at Git\usr\bin, so the contract
+        #    Craft's dev-utils/patch and dev-utils/sed blueprints rely on
+        #    breaks and post-install fails to locate patch.exe / sed.exe.
+        #    Detect the ARM64 layout by probing for usr\bin and return a
+        #    path one level shifted so the contract still holds.
+        #
+        # After applying all three patches we strip the `CraftRevision` line
         # from the workspace copy of craftmaster.ini so the subsequent
         # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
         # craft-clone, which would clobber the in-place edits.
@@ -112,10 +123,17 @@ jobs:
               exit 1
           }
 
+          $gitPath = Join-Path $craftClone "blueprints\dev-utils\_windows\git\git.py"
+          if (-not (Test-Path $gitPath)) {
+              Write-Error "git.py not found at $gitPath"
+              exit 1
+          }
+
           $patchScript = @'
           import sys, re
           helper_path = sys.argv[1]
           zlib_path   = sys.argv[2]
+          git_path    = sys.argv[3]
 
           # Patch 1: add ARM64 entries to the architectures dicts in
           # CraftSetupHelper.getMSVCEnv.
@@ -153,11 +171,53 @@ jobs:
           with open(zlib_path, 'w', encoding='utf-8', newline='') as f:
               f.write(s.replace(old, new))
           print(f'Patched {zlib_path}: zlib.net -> github.com release asset')
+
+          # Patch 3: dev-utils/_windows/git/git.py locateGit() — handle the
+          # Git for Windows ARM64 (clangarm64) layout where git.exe lives at
+          # Git\clangarm64\bin\git.exe but the shared MSYS userland stays at
+          # Git\usr\bin. Without this fix, dev-utils/patch and dev-utils/sed
+          # fail post-install because they look up patch.exe / sed.exe at
+          # locateGit().parent / "usr/bin/X.exe", which under the new layout
+          # resolves to Git\clangarm64\usr\bin\X.exe (does not exist).
+          with open(git_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old_block = (
+              '        # check whether git is installed by the system or us\n'
+              '        if (CraftCore.standardDirs.craftRoot() / "dev-utils") in gitPath.parents:\n'
+              '            return CraftCore.standardDirs.craftRoot() / "dev-utils/git/bin"\n'
+              '        return gitPath.parent\n'
+          )
+          new_block = (
+              '        # check whether git is installed by the system or us\n'
+              '        if (CraftCore.standardDirs.craftRoot() / "dev-utils") in gitPath.parents:\n'
+              '            return CraftCore.standardDirs.craftRoot() / "dev-utils/git/bin"\n'
+              '        # Downstream consumers (dev-utils/patch, dev-utils/sed) expect\n'
+              '        # locateGit().parent to be the MSYS root containing usr/bin/X.exe.\n'
+              '        # Legacy x64 Git for Windows lays out as Git\\bin\\git.exe so\n'
+              '        # gitPath.parent = Git\\bin and (Git\\bin).parent = Git, contract\n'
+              '        # holds. The Git for Windows ARM64 (clangarm64) build instead\n'
+              '        # uses Git\\clangarm64\\bin\\git.exe but keeps the shared MSYS\n'
+              '        # userland at Git\\usr\\bin, so .parent.parent = Git\\clangarm64\n'
+              '        # and the contract breaks. Detect by looking for usr\\bin and\n'
+              '        # return a path one level shifted so the contract still holds.\n'
+              '        binDir = gitPath.parent\n'
+              '        if (binDir.parent / "usr" / "bin").exists():\n'
+              '            return binDir\n'
+              '        if (binDir.parent.parent / "usr" / "bin").exists():\n'
+              '            return binDir.parent.parent / "bin"\n'
+              '        return binDir\n'
+          )
+          if old_block not in s:
+              print('ERROR: could not find locateGit() block in git.py', file=sys.stderr)
+              sys.exit(1)
+          with open(git_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old_block, new_block))
+          print(f'Patched {git_path}: locateGit() handles ARM64 Git for Windows layout')
           '@
 
           $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
           Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
-          python $patchPath $helperPath $zlibPath
+          python $patchPath $helperPath $zlibPath $gitPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Strip CraftRevision from the workspace copy of craftmaster.ini
@@ -171,6 +231,8 @@ jobs:
           Select-String -Path $helperPath -Pattern "Architecture\.arm64" | ForEach-Object { Write-Host $_ }
           Write-Host "--- Verifying patched zlib URL in zlib.py ---"
           Select-String -Path $zlibPath -Pattern "github\.com/madler/zlib" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying locateGit() ARM64 handling in git.py ---"
+          Select-String -Path $gitPath -Pattern "binDir\.parent\.parent" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
