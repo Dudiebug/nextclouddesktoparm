@@ -63,7 +63,7 @@ jobs:
       - name: Pre-clone KDE Craft and apply local patches
         shell: pwsh
         # We pre-clone KDE Craft into the same path craftmaster would use
-        # and apply six local patches against the pinned revision before
+        # and apply seven local patches against the pinned revision before
         # craftmaster ever runs:
         #
         # 1. bin/CraftSetupHelper.py — add native and cross ARM64 entries
@@ -129,7 +129,22 @@ jobs:
         #    that uses the ARM64 .S perlasm modules, so select it
         #    explicitly when CraftCore.compiler.architecture is arm64.
         #
-        # After applying all six patches we strip the `CraftRevision` line
+        # 7. blueprints/libs/liblzma/liblzma.py — inject a configure()
+        #    override into PackageMSBuild that adds arm64 platform
+        #    configurations to the xz 5.2.3 windows/ project files.
+        #    xz 5.2.3 predates Windows-on-ARM and its xz_win.sln,
+        #    liblzma.vcxproj, and liblzma_dll.vcxproj only declare
+        #    Win32, x64, and ReleaseMT|x64 platform configurations. On
+        #    a Windows ARM64 host MSBuild rejects /p:Platform=arm64
+        #    (the platform Craft passes for an arm64 target) with
+        #    MSB4126 "The specified solution configuration
+        #    'Release|arm64' is invalid". xz itself is pure C with no
+        #    x86-specific inline assembly, so cloning the x64 sections
+        #    of those three files as arm64 siblings is sufficient:
+        #    MSBuild's v143 toolset handles arm64 codegen automatically
+        #    once an arm64 platform is declared.
+        #
+        # After applying all seven patches we strip the `CraftRevision` line
         # from the workspace copy of craftmaster.ini so the subsequent
         # craftmaster run does NOT do `git checkout -f <pinnedRev>` on
         # craft-clone, which would clobber the in-place edits.
@@ -175,6 +190,12 @@ jobs:
               exit 1
           }
 
+          $liblzmaPath = Join-Path $craftClone "blueprints\libs\liblzma\liblzma.py"
+          if (-not (Test-Path $liblzmaPath)) {
+              Write-Error "liblzma.py not found at $liblzmaPath"
+              exit 1
+          }
+
           $patchScript = @'
           import sys, re
           helper_path = sys.argv[1]
@@ -182,6 +203,7 @@ jobs:
           git_path    = sys.argv[3]
           perl_path   = sys.argv[4]
           openssl_path = sys.argv[5]
+          liblzma_path = sys.argv[6]
 
           # Patch 1: add ARM64 entries to the architectures dicts in
           # CraftSetupHelper.getMSVCEnv.
@@ -349,11 +371,98 @@ jobs:
           with open(openssl_path, 'w', encoding='utf-8', newline='') as f:
               f.write(s.replace(old_openssl, new_openssl))
           print(f'Patched {openssl_path}: openssl Configure target VC-WIN64-ARM for arm64')
+
+          # Patch 7: libs/liblzma/liblzma.py — xz 5.2.3's windows/ project files
+          # only declare Win32, x64, and ReleaseMT|x64 platform configurations.
+          # On a Windows ARM64 host MSBuild rejects /p:Platform=arm64 with
+          # MSB4126 "The specified solution configuration 'Release|arm64' is
+          # invalid". xz itself is pure C with no x86-specific assembly, so
+          # cloning the x64 sections of xz_win.sln, liblzma.vcxproj, and
+          # liblzma_dll.vcxproj as arm64 siblings is sufficient. Inject a
+          # configure() override into PackageMSBuild that does the cloning
+          # right before MSBuild runs.
+          with open(liblzma_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old_liblzma = (
+              'class PackageMSBuild(MSBuildPackageBase):\n'
+              '    def __init__(self, **kwargs):\n'
+              '        super().__init__(**kwargs)\n'
+              '        self.subinfo.options.configure.projectFile = self.sourceDir() / "windows/xz_win.sln"\n'
+              '        self.msbuildTargets = ["liblzma_dll"]\n'
+              '\n'
+              '    def install(self):\n'
+          )
+          new_liblzma = (
+              'class PackageMSBuild(MSBuildPackageBase):\n'
+              '    def __init__(self, **kwargs):\n'
+              '        super().__init__(**kwargs)\n'
+              '        self.subinfo.options.configure.projectFile = self.sourceDir() / "windows/xz_win.sln"\n'
+              '        self.msbuildTargets = ["liblzma_dll"]\n'
+              '\n'
+              '    def configure(self):\n'
+              '        # The xz 5.2.3 windows/ project files only declare Win32, x64, and\n'
+              '        # ReleaseMT|x64 platform configurations. On a Windows ARM64 host\n'
+              '        # MSBuild rejects /p:Platform=arm64 (the platform Craft passes for\n'
+              '        # an arm64 target) with MSB4126 "The specified solution\n'
+              '        # configuration \'Release|arm64\' is invalid". xz itself is pure C\n'
+              '        # with no x86-specific inline assembly, so cloning the x64 sections\n'
+              '        # of xz_win.sln, liblzma.vcxproj, and liblzma_dll.vcxproj as arm64\n'
+              '        # siblings is sufficient: MSBuild\'s v143 toolset handles arm64\n'
+              '        # codegen automatically once an arm64 platform is declared.\n'
+              '        from CraftCompiler import CraftCompiler\n'
+              '        if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
+              '            self._addArm64PlatformConfigs()\n'
+              '        return super().configure()\n'
+              '\n'
+              '    def _addArm64PlatformConfigs(self):\n'
+              '        import re\n'
+              '        windowsDir = self.sourceDir() / "windows"\n'
+              '        slnPath = windowsDir / "xz_win.sln"\n'
+              '        with open(slnPath, "r", encoding="utf-8", newline="") as f:\n'
+              '            slnLines = f.readlines()\n'
+              '        if not any("|arm64" in ln for ln in slnLines):\n'
+              '            outLines = []\n'
+              '            for ln in slnLines:\n'
+              '                outLines.append(ln)\n'
+              '                if "|x64" in ln:\n'
+              '                    outLines.append(ln.replace("|x64", "|arm64"))\n'
+              '            with open(slnPath, "w", encoding="utf-8", newline="") as f:\n'
+              '                f.writelines(outLines)\n'
+              '        # Non-greedy block regex: capture each top-level XML element whose\n'
+              '        # opening tag mentions "|x64" (in either an Include= or Condition=\n'
+              '        # attribute) and clone it as an arm64 sibling. The .vcxproj files\n'
+              '        # have no nested elements of the same name at the relevant depths,\n'
+              '        # so a non-greedy match is unambiguous.\n'
+              '        blockPattern = re.compile(r"(  <(\\w+)[^>]*\\|x64[^>]*>[\\s\\S]*?</\\2>)")\n'
+              '        for vcxproj in ("liblzma.vcxproj", "liblzma_dll.vcxproj"):\n'
+              '            path = windowsDir / vcxproj\n'
+              '            with open(path, "r", encoding="utf-8", newline="") as f:\n'
+              '                content = f.read()\n'
+              '            if "|arm64" in content:\n'
+              '                continue\n'
+              '            def cloneBlock(m):\n'
+              '                orig = m.group(1)\n'
+              '                cloned = (\n'
+              '                    orig.replace("|x64", "|arm64")\n'
+              '                        .replace("<Platform>x64</Platform>", "<Platform>arm64</Platform>")\n'
+              '                )\n'
+              '                return orig + "\\n" + cloned\n'
+              '            with open(path, "w", encoding="utf-8", newline="") as f:\n'
+              '                f.write(blockPattern.sub(cloneBlock, content))\n'
+              '\n'
+              '    def install(self):\n'
+          )
+          if old_liblzma not in s:
+              print('ERROR: could not find PackageMSBuild __init__/install block in liblzma.py', file=sys.stderr)
+              sys.exit(1)
+          with open(liblzma_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s.replace(old_liblzma, new_liblzma))
+          print(f'Patched {liblzma_path}: PackageMSBuild.configure() clones x64 platform configs as arm64')
           '@
 
           $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft_local.py"
           Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
-          python $patchPath $helperPath $zlibPath $gitPath $perlPath $opensslPath
+          python $patchPath $helperPath $zlibPath $gitPath $perlPath $opensslPath $liblzmaPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Strip CraftRevision from the workspace copy of craftmaster.ini
@@ -375,6 +484,8 @@ jobs:
           Select-String -Path $perlPath -Pattern "self\.sourceDir\(\)" | ForEach-Object { Write-Host $_ }
           Write-Host "--- Verifying VC-WIN64-ARM target in openssl.py ---"
           Select-String -Path $opensslPath -Pattern "VC-WIN64-ARM" | ForEach-Object { Write-Host $_ }
+          Write-Host "--- Verifying arm64 platform configs injection in liblzma.py ---"
+          Select-String -Path $liblzmaPath -Pattern "_addArm64PlatformConfigs" | ForEach-Object { Write-Host $_ }
 
       - name: Install Craft Master with Nextcloud Client Deps
         shell: pwsh
