@@ -11,7 +11,7 @@ python_path = sys.argv[9]
 
 # Patch 1: add ARM64 entries to the architectures dicts in
 # CraftSetupHelper.getMSVCEnv.
-with open(helper_path, 'r', encoding='utf-8', newline='') as f:
+with open(helper_path, 'r', encoding='utf-8') as f:
     s = f.read()
 s_new = re.sub(
     r'(CraftCore\.compiler\.Architecture\.x86_64: "amd64",\r?\n)(\s*\})',
@@ -29,20 +29,20 @@ s_new2 = re.sub(
 if s_new2 == s_new:
     print('ERROR: could not patch non-native architectures dict', file=sys.stderr)
     sys.exit(1)
-with open(helper_path, 'w', encoding='utf-8', newline='') as f:
+with open(helper_path, 'w', encoding='utf-8') as f:
     f.write(s_new2)
 print(f'Patched {helper_path}: added ARM64 architecture entries')
 
 # Patch 2: rewrite the dead zlib.net URL in the zlib blueprint
 # to a GitHub release asset that has the same SHA256.
-with open(zlib_path, 'r', encoding='utf-8', newline='') as f:
+with open(zlib_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old = 'f"https://www.zlib.net/zlib-{ver}.tar.xz"'
 new = 'f"https://github.com/madler/zlib/releases/download/v{ver}/zlib-{ver}.tar.xz"'
 if old not in s:
     print('ERROR: could not find zlib.net URL literal in zlib.py', file=sys.stderr)
     sys.exit(1)
-with open(zlib_path, 'w', encoding='utf-8', newline='') as f:
+with open(zlib_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old, new))
 print(f'Patched {zlib_path}: zlib.net -> github.com release asset')
 
@@ -53,7 +53,7 @@ print(f'Patched {zlib_path}: zlib.net -> github.com release asset')
 # fail post-install because they look up patch.exe / sed.exe at
 # locateGit().parent / "usr/bin/X.exe", which under the new layout
 # resolves to Git\clangarm64\usr\bin\X.exe (does not exist).
-with open(git_path, 'r', encoding='utf-8', newline='') as f:
+with open(git_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_block = (
     '        # check whether git is installed by the system or us\n'
@@ -84,7 +84,7 @@ new_block = (
 if old_block not in s:
     print('ERROR: could not find locateGit() block in git.py', file=sys.stderr)
     sys.exit(1)
-with open(git_path, 'w', encoding='utf-8', newline='') as f:
+with open(git_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_block, new_block))
 print(f'Patched {git_path}: locateGit() handles ARM64 Git for Windows layout')
 
@@ -96,7 +96,7 @@ print(f'Patched {git_path}: locateGit() handles ARM64 Git for Windows layout')
 # with 32-bit type assumptions; the resulting binary crashes with
 # 0xc0000005 the moment perl tries to use it. Extend the 64-bit branch
 # to include arm64 so the Makefile can self-configure.
-with open(perl_path, 'r', encoding='utf-8', newline='') as f:
+with open(perl_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_perl = '"CRAFT_WIN64": "" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64 else "undef",'
 new_perl = '"CRAFT_WIN64": "" if CraftCore.compiler.architecture in (CraftCompiler.Architecture.x86_64, CraftCompiler.Architecture.arm64) else "undef",'
@@ -104,7 +104,7 @@ if old_perl not in s:
     print('ERROR: could not find CRAFT_WIN64 ternary in perl.py', file=sys.stderr)
     sys.exit(1)
 s = s.replace(old_perl, new_perl)
-with open(perl_path, 'w', encoding='utf-8', newline='') as f:
+with open(perl_path, 'w', encoding='utf-8') as f:
     f.write(s)
 print(f'Patched {perl_path}: CRAFT_WIN64 empty for arm64 (lets Makefile auto-detect)')
 
@@ -139,7 +139,7 @@ new_globenv = (
 if old_globenv not in s:
     print('ERROR: could not find _globEnv() block in perl.py', file=sys.stderr)
     sys.exit(1)
-with open(perl_path, 'w', encoding='utf-8', newline='') as f:
+with open(perl_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_globenv, new_globenv))
 print(f'Patched {perl_path}: _globEnv adds sourceDir to PATH for bare-miniperl recipe')
 
@@ -153,7 +153,7 @@ print(f'Patched {perl_path}: _globEnv adds sourceDir to PATH for bare-miniperl r
 # files cannot be linked into the otherwise-arm64 build. OpenSSL
 # ships a proper VC-WIN64-ARM target that uses the ARM64 .S
 # perlasm modules, so select it explicitly for arm64.
-with open(openssl_path, 'r', encoding='utf-8', newline='') as f:
+with open(openssl_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_openssl = '                "VC-WIN64A" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64 else "VC-WIN32",\n'
 new_openssl = (
@@ -172,7 +172,7 @@ new_openssl = (
 if old_openssl not in s:
     print('ERROR: could not find VC-WIN64A/VC-WIN32 ternary in openssl.py', file=sys.stderr)
     sys.exit(1)
-with open(openssl_path, 'w', encoding='utf-8', newline='') as f:
+with open(openssl_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_openssl, new_openssl))
 print(f'Patched {openssl_path}: openssl Configure target VC-WIN64-ARM for arm64')
 
@@ -185,7 +185,7 @@ print(f'Patched {openssl_path}: openssl Configure target VC-WIN64-ARM for arm64'
 # liblzma_dll.vcxproj as arm64 siblings is sufficient. Inject a
 # configure() override into PackageMSBuild that does the cloning
 # right before MSBuild runs.
-with open(liblzma_path, 'r', encoding='utf-8', newline='') as f:
+with open(liblzma_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_liblzma = (
     'class PackageMSBuild(MSBuildPackageBase):\n'
@@ -259,13 +259,13 @@ new_liblzma = (
 if old_liblzma not in s:
     print('ERROR: could not find PackageMSBuild __init__/install block in liblzma.py', file=sys.stderr)
     sys.exit(1)
-with open(liblzma_path, 'w', encoding='utf-8', newline='') as f:
+with open(liblzma_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_liblzma, new_liblzma))
 print(f'Patched {liblzma_path}: PackageMSBuild.configure() clones x64 platform configs as arm64')
 
 # Patch 8: libs/libunistring/libunistring.py
 import stat, textwrap
-with open(libunistring_path, 'r', encoding='utf-8', newline='') as f:
+with open(libunistring_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_libunistring = (
     'class Package(AutoToolsPackageBase):\n'
@@ -324,12 +324,12 @@ new_libunistring = (
 if old_libunistring not in s:
     print('ERROR: could not find Package class in libunistring.py', file=sys.stderr)
     sys.exit(1)
-with open(libunistring_path, 'w', encoding='utf-8', newline='') as f:
+with open(libunistring_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_libunistring, new_libunistring))
 print(f'Patched {libunistring_path}: Package.configure() installs windres ARM64 wrapper')
 
 # Patch 9: libs/libffi/libffi.py
-with open(libffi_path, 'r', encoding='utf-8', newline='') as f:
+with open(libffi_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_libffi_import = 'from Package.AutoToolsPackageBase import AutoToolsPackageBase\nfrom Utils import CraftHash\n'
 new_libffi_import = 'from Package.AutoToolsPackageBase import AutoToolsPackageBase\nfrom Utils import CraftHash\nfrom Utils.Arguments import Arguments\n'
@@ -372,12 +372,12 @@ new_libffi_tail = (
 if old_libffi_tail not in s:
     print('ERROR: could not find FFI_BUILDING_DLL tail block in libffi.py', file=sys.stderr)
     sys.exit(1)
-with open(libffi_path, 'w', encoding='utf-8', newline='') as f:
+with open(libffi_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_libffi_tail, new_libffi_tail))
 print(f'Patched {libffi_path}: ARM64 platform triple override and -marm64 CCAS flag')
 
 # Patch 10: libs/python/python.py
-with open(python_path, 'r', encoding='utf-8', newline='') as f:
+with open(python_path, 'r', encoding='utf-8') as f:
     s = f.read()
 old_python_install = (
     '        def install(self):\n'
@@ -413,6 +413,6 @@ for old_ref, new_ref in [
         print(f'ERROR: PCbuild/amd64 reference not found: {old_ref!r}', file=sys.stderr)
         sys.exit(1)
     s = s.replace(old_ref, new_ref)
-with open(python_path, 'w', encoding='utf-8', newline='') as f:
+with open(python_path, 'w', encoding='utf-8') as f:
     f.write(s)
 print(f'Patched {python_path}: PCbuild/amd64 -> PCbuild/{{pcbuildArch}} in install()')
