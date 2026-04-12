@@ -402,11 +402,11 @@ if old_python_install not in s:
     sys.exit(1)
 s = s.replace(old_python_install, new_python_install)
 for old_ref, new_ref in [
-    ('self.sourceDir() / f"PCbuild/amd64/", self.imageDir() / "bin", ["*.dll"]',
+    ('self.sourceDir() / "PCbuild/amd64/", self.imageDir() / "bin", ["*.dll"]',
      'self.sourceDir() / f"PCbuild/{pcbuildArch}/", self.imageDir() / "bin", ["*.dll"]'),
     ('self.sourceDir() / f"PCbuild/amd64/{p}{debugSuffix}.lib"',
      'self.sourceDir() / f"PCbuild/{pcbuildArch}/{p}{debugSuffix}.lib"'),
-    ('self.sourceDir() / f"PCbuild/amd64/", self.imageDir() / "bin/DLLs", ["*.pyd"]',
+    ('self.sourceDir() / "PCbuild/amd64/", self.imageDir() / "bin/DLLs", ["*.pyd"]',
      'self.sourceDir() / f"PCbuild/{pcbuildArch}/", self.imageDir() / "bin/DLLs", ["*.pyd"]'),
 ]:
     if old_ref not in s:
