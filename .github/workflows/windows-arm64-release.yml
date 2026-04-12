@@ -682,65 +682,11 @@ jobs:
           craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|master|"
           craft craft
 
-          # Patch 13: nextcloud-client blueprint — fix createPackage() to set
-          # proper executable (start menu shortcut), icon, and version number.
-          $ncBlueprints = Join-Path "${{ github.workspace }}" "${{ env.CRAFT_TARGET }}\etc\blueprints\locations\desktop-client-blueprints"
-          $ncBlueprintPath = Join-Path $ncBlueprints "nextcloud-client\nextcloud-client.py"
-          if (Test-Path $ncBlueprintPath) {
-              $bp = Get-Content $ncBlueprintPath -Raw
-              $oldCreatePkg = @'
-    def createPackage(self):
-        self.blacklist_file.append(os.path.join(self.packageDir(), 'blacklist.txt'))
-        self.defines["appname"] = "nextcloud"
-        self.defines["company"] = "Nextcloud GmbH"
-        self.applicationExecutable = "nextcloud"
-
-        self.ignoredPackages += ["binary/mysql"]
-        if not CraftCore.compiler.isLinux:
-            self.ignoredPackages += ["libs/dbus"]
-
-        return super().createPackage()
-'@
-              $newCreatePkg = @'
-    def createPackage(self):
-        self.blacklist_file.append(os.path.join(self.packageDir(), 'blacklist.txt'))
-        self.defines["appname"] = "nextcloud"
-        self.defines["company"] = "Nextcloud GmbH"
-
-        # Set executable for Start Menu shortcut and "Launch after install"
-        self.defines["executable"] = "bin\\nextcloud.exe"
-
-        # Use the Nextcloud icon if available
-        ncIcon = os.path.join(self.buildDir(), "src", "gui", "Nextcloud.ico")
-        if os.path.isfile(ncIcon):
-            self.defines["icon"] = ncIcon
-
-        # Read version from VERSION.cmake
-        versionCmake = os.path.join(self.sourceDir(), "VERSION.cmake")
-        if os.path.isfile(versionCmake):
-            import re
-            with open(versionCmake, "r") as f:
-                txt = f.read()
-            major = re.search(r"MIRALL_VERSION_MAJOR\s+(\d+)", txt)
-            minor = re.search(r"MIRALL_VERSION_MINOR\s+(\d+)", txt)
-            patch = re.search(r"MIRALL_VERSION_PATCH\s+(\d+)", txt)
-            if major and minor and patch:
-                self.defines["version"] = f"{major.group(1)}.{minor.group(1)}.{patch.group(1)}"
-
-        self.ignoredPackages += ["binary/mysql"]
-        if not CraftCore.compiler.isLinux:
-            self.ignoredPackages += ["libs/dbus"]
-
-        return super().createPackage()
-'@
-              if ($bp.Contains('self.applicationExecutable = "nextcloud"')) {
-                  $bp = $bp.Replace($oldCreatePkg, $newCreatePkg)
-                  Set-Content $ncBlueprintPath -Value $bp
-                  Write-Host "Patched $ncBlueprintPath`: fixed executable, icon, and version"
-              } else {
-                  Write-Host "WARN: nextcloud-client blueprint has changed — createPackage patch skipped"
-              }
-          }
+          # Patch 13: NSIS packager (ARM64 as 64-bit, "Launch after install") and
+          # nextcloud-client blueprint (executable, icon, version number).
+          $ncBlueprintPath = Join-Path "${{ github.workspace }}" "${{ env.CRAFT_TARGET }}\etc\blueprints\locations\desktop-client-blueprints\nextcloud-client\nextcloud-client.py"
+          python "${{ github.workspace }}\.github\scripts\patch-nsis-and-blueprint.py" $craftClone $ncBlueprintPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Patches 11-12: craft-blueprints-kde files (cloned by --add-blueprint-repository above).
           $kdeBlueprints = Join-Path "${{ github.workspace }}" "${{ env.CRAFT_TARGET }}\etc\blueprints\locations\craft-blueprints-kde"
@@ -809,41 +755,6 @@ jobs:
           Set-Content -Path $kdePatchPath -Value $kdePatchScript -Encoding ASCII
           python $kdePatchPath $libjpegPath $pixmanPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          # --- Patch NSIS packager: treat ARM64 as 64-bit, add "Launch after install" ---
-          $nsisPackagerPath = Join-Path $craftClone "bin\Packager\NullsoftInstallerPackager.py"
-          $nsisTemplatePath = Join-Path $craftClone "bin\Packager\Nsis\NullsoftInstaller.nsi"
-
-          # Fix NullsoftInstallerPackager.py: ARM64 should use PROGRAMFILES64
-          (Get-Content $nsisPackagerPath -Raw) `
-            -replace '(CraftCore\.compiler\.architecture == CraftCompiler\.Architecture\.x86_64)( else "\$PROGRAMFILES")',
-                     'CraftCore.compiler.architecture in (CraftCompiler.Architecture.x86_64, CraftCompiler.Architecture.arm64)$2' `
-            -replace '(CraftCore\.compiler\.architecture == CraftCompiler\.Architecture\.x86_64)( else "")',
-                     'CraftCore.compiler.architecture in (CraftCompiler.Architecture.x86_64, CraftCompiler.Architecture.arm64)$2' |
-            Set-Content $nsisPackagerPath
-          Write-Host "Patched $nsisPackagerPath`: ARM64 uses PROGRAMFILES64"
-
-          # Add finishpage_run_define support to the packager
-          $packagerContent = Get-Content $nsisPackagerPath -Raw
-          $packagerContent = $packagerContent -replace `
-            '(shortcuts\.append\(self\._createShortcut\(defines\["productname"\], defines\["executable"\]\)\)\s+)del defines\["executable"\]',
-            ('$1defines["finishpage_run_define"] = f''!define FINISHPAGE_RUN_EXECUTABLE "{OsUtils.toNativePath(defines["executable"])}"''' + "`n" +
-             '            del defines["executable"]')
-          if ($packagerContent -notmatch 'finishpage_run_define') {
-            $packagerContent = $packagerContent -replace `
-              '(del defines\["executable"\])',
-              '$1' + "`n" + '        else:' + "`n" + '            defines["finishpage_run_define"] = ""'
-          }
-          Set-Content $nsisPackagerPath -Value $packagerContent
-          Write-Host "Patched $nsisPackagerPath`: added finishpage_run_define"
-
-          # Add "Launch after install" support to NullsoftInstaller.nsi
-          $nsiContent = Get-Content $nsisTemplatePath -Raw
-          $nsiContent = $nsiContent -replace `
-            '(!insertmacro MUI_PAGE_FINISH)',
-            "@{finishpage_run_define}`n!ifdef FINISHPAGE_RUN_EXECUTABLE`n!define MUI_FINISHPAGE_RUN `"`$INSTDIR\`${FINISHPAGE_RUN_EXECUTABLE}`"`n!define MUI_FINISHPAGE_RUN_TEXT `"Launch @{productname}`"`n!endif`n`$1"
-          Set-Content $nsisTemplatePath -Value $nsiContent
-          Write-Host "Patched $nsisTemplatePath`: added Launch after install checkbox"
 
           craft --install-deps nextcloud-client
 
