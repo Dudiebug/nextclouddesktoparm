@@ -3,6 +3,7 @@
   - SPDX-FileCopyrightText: 2011 Nextcloud GmbH and Nextcloud contributors
   - SPDX-License-Identifier: GPL-2.0-or-later
 -->
+# PORTED TO ARM WITH CLAUDE CODE BECAUSE THE NEXTCLOUD TEAM COULDN'T BE BOTHERED
 # Nextcloud Desktop Client
 
 [![REUSE status](https://api.reuse.software/badge/github.com/nextcloud/desktop)](https://api.reuse.software/info/github.com/nextcloud/desktop)
