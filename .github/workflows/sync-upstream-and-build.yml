@@ -1,0 +1,383 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Sync Upstream & Build ARM64
+
+# Checks daily for new Nextcloud Desktop stable releases.
+# When a new version is found, syncs the upstream tag, builds the
+# ARM64 installer on GitHub's native ARM64 runner, and publishes
+# a prerelease on this repo.
+
+on:
+  schedule:
+    # Run daily at 06:17 UTC (off-minute to avoid load spikes)
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: 'Force build a specific upstream tag (e.g. v3.15.0). Leave empty to auto-detect latest.'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  check-upstream:
+    name: Check for new Nextcloud release
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.new_version }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new upstream release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.force_version }}" ]; then
+            UPSTREAM_TAG="${{ inputs.force_version }}"
+            echo "Forced version: $UPSTREAM_TAG"
+          else
+            # Get latest stable release from upstream (skip prereleases)
+            UPSTREAM_TAG=$(gh api repos/nextcloud/desktop/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+            if [ -z "$UPSTREAM_TAG" ]; then
+              # Fallback: get latest tag
+              UPSTREAM_TAG=$(gh api repos/nextcloud/desktop/tags --jq '.[0].name' 2>/dev/null || echo "")
+            fi
+          fi
+
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "Could not determine upstream version"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Upstream latest: $UPSTREAM_TAG"
+
+          # Check if we already have an ARM64 release for this version
+          ARM64_TAG="arm64-${UPSTREAM_TAG}"
+          EXISTING=$(gh api repos/${{ github.repository }}/releases/tags/${ARM64_TAG} --jq '.tag_name' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ] && [ -z "${{ inputs.force_version }}" ]; then
+            echo "ARM64 release ${ARM64_TAG} already exists — skipping"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version detected or force build requested: $UPSTREAM_TAG"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "new_version=${UPSTREAM_TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-arm64:
+    name: Build ARM64 Installer
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: windows-11-arm
+    env:
+      CRAFT_TARGET: windows-msvc2022_arm64-cl
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
+      UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+      NEW_VERSION: ${{ needs.check-upstream.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream tag
+        run: |
+          git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
+          git fetch upstream --tags
+          git checkout "${{ env.UPSTREAM_TAG }}"
+        shell: bash
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'arm64'
+
+      - name: Pre-clone KDE Craft and apply ARM64 patches
+        shell: pwsh
+        run: |
+          $workspace  = "${{ github.workspace }}"
+          $craftClone = Join-Path $workspace "craft-clone"
+          $pinnedRev  = "d9d06ff743183104bc50698e376807976fa0e460"
+
+          if (-not (Test-Path $craftClone)) {
+              git clone https://invent.kde.org/packaging/craft.git $craftClone
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          git -C $craftClone checkout -f $pinnedRev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Re-use the same patching script from windows-arm64-release.yml.
+          # This is intentionally duplicated so this workflow is self-contained.
+          # For the full explanation of each patch, see windows-arm64-release.yml.
+          $helperPath       = Join-Path $craftClone "bin\CraftSetupHelper.py"
+          $zlibPath          = Join-Path $craftClone "blueprints\libs\zlib\zlib.py"
+          $gitBpPath         = Join-Path $craftClone "blueprints\dev-utils\_windows\git\git.py"
+          $perlPath          = Join-Path $craftClone "blueprints\dev-utils\perl\perl.py"
+          $opensslPath       = Join-Path $craftClone "blueprints\libs\openssl\openssl.py"
+          $liblzmaPath       = Join-Path $craftClone "blueprints\libs\liblzma\liblzma.py"
+          $libunistringPath  = Join-Path $craftClone "blueprints\libs\libunistring\libunistring.py"
+          $libffiPath        = Join-Path $craftClone "blueprints\libs\libffi\libffi.py"
+          $pythonPath        = Join-Path $craftClone "blueprints\libs\python\python.py"
+
+          # Verify all files exist
+          foreach ($p in @($helperPath, $zlibPath, $gitBpPath, $perlPath, $opensslPath, $liblzmaPath, $libunistringPath, $libffiPath, $pythonPath)) {
+              if (-not (Test-Path $p)) { Write-Error "$p not found"; exit 1 }
+          }
+
+          # Apply the same patches as the release workflow (see windows-arm64-release.yml
+          # for detailed comments on each patch). Using the same Python patch script.
+          $patchScript = @'
+          import sys, re
+
+          helper_path = sys.argv[1]
+          zlib_path   = sys.argv[2]
+          git_path    = sys.argv[3]
+          perl_path   = sys.argv[4]
+          openssl_path = sys.argv[5]
+          liblzma_path = sys.argv[6]
+          libunistring_path = sys.argv[7]
+          libffi_path = sys.argv[8]
+          python_path = sys.argv[9]
+
+          # --- Patch 1: CraftSetupHelper ARM64 architectures ---
+          with open(helper_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          s = re.sub(
+              r'(CraftCore\.compiler\.Architecture\.x86_64: "amd64",\r?\n)(\s*\})',
+              r'\1                CraftCore.compiler.Architecture.arm64: "arm64",\n\2',
+              s, count=1)
+          s = re.sub(
+              r'(CraftCore\.compiler\.Architecture\.x86_64: "x86_amd64",\r?\n)(\s*\})',
+              r'\1                CraftCore.compiler.Architecture.arm64: "x86_arm64",\n\2',
+              s, count=1)
+          with open(helper_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {helper_path}')
+
+          # --- Patch 2: zlib URL ---
+          with open(zlib_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          s = s.replace(
+              'f"https://www.zlib.net/zlib-{ver}.tar.xz"',
+              'f"https://github.com/madler/zlib/releases/download/v{ver}/zlib-{ver}.tar.xz"')
+          with open(zlib_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {zlib_path}')
+
+          # --- Patch 3: Git ARM64 layout ---
+          with open(git_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          old = ('        # check whether git is installed by the system or us\n'
+                 '        if (CraftCore.standardDirs.craftRoot() / "dev-utils") in gitPath.parents:\n'
+                 '            return CraftCore.standardDirs.craftRoot() / "dev-utils/git/bin"\n'
+                 '        return gitPath.parent\n')
+          new = ('        # check whether git is installed by the system or us\n'
+                 '        if (CraftCore.standardDirs.craftRoot() / "dev-utils") in gitPath.parents:\n'
+                 '            return CraftCore.standardDirs.craftRoot() / "dev-utils/git/bin"\n'
+                 '        # Git for Windows ARM64 puts git.exe under clangarm64/bin but keeps\n'
+                 '        # the shared MSYS userland at <root>/usr/bin.\n'
+                 '        candidate = gitPath.parent\n'
+                 '        if candidate.name == "bin" and (candidate.parent.parent / "usr" / "bin").is_dir():\n'
+                 '            candidate = candidate.parent.parent\n'
+                 '        return candidate\n')
+          if old in s:
+              s = s.replace(old, new)
+          with open(git_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {git_path}')
+
+          # --- Patch 4 & 5: Perl ARM64 ---
+          with open(perl_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          s = s.replace(
+              '"define" if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64 else "undef"',
+              '"define" if CraftCore.compiler.architecture in (CraftCompiler.Architecture.x86_64, CraftCompiler.Architecture.arm64) else "undef"')
+          if 'def _globEnv' in s and 'self.sourceDir()' not in s.split('def _globEnv')[1].split('def ')[0]:
+              s = s.replace(
+                  '    def _globEnv(self):\n        env = super()._globEnv()\n',
+                  '    def _globEnv(self):\n        env = super()._globEnv()\n'
+                  '        # Add perl source dir to PATH so bare `miniperl` in Makefile recipes resolves.\n'
+                  '        env["PATH"] = str(self.sourceDir()) + os.pathsep + env.get("PATH", "")\n')
+          with open(perl_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {perl_path}')
+
+          # --- Patch 6: OpenSSL ARM64 target ---
+          with open(openssl_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          s = s.replace(
+              '"VC-WIN64A" if CraftCore.compiler.isX64() else "VC-WIN32"',
+              '"VC-WIN64A" if CraftCore.compiler.isX64() else "VC-WIN64-ARM" if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64 else "VC-WIN32"')
+          with open(openssl_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {openssl_path}')
+
+          # --- Patch 7: liblzma ARM64 platform ---
+          with open(liblzma_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          if 'arm64' not in s:
+              inject = '''
+    def configure(self):
+        import re as _re
+        for proj in ("xz_win.sln", "liblzma.vcxproj", "liblzma_dll.vcxproj"):
+            p = self.sourceDir() / "windows" / proj
+            if not p.exists():
+                continue
+            txt = p.read_text(encoding="utf-8-sig")
+            if "arm64" in txt.lower():
+                continue
+            txt = _re.sub(r'(x64)', lambda m: m.group(0), txt)
+            arm_txt = txt
+            for old, new in [("x64", "arm64"), ("X64", "ARM64")]:
+                arm_txt = arm_txt.replace(old, new)
+            combined = txt.replace("</Project>", "") + "<!-- arm64 platforms injected by CI -->\\n" + arm_txt.split("<?xml")[0] + "</Project>"
+            p.write_text(combined, encoding="utf-8-sig")
+        return super().configure()
+'''
+              old_class = 'class PackageMSBuild(MSBuildPackageBase):\n    def __init__'
+              if old_class in s:
+                  s = s.replace(old_class, 'class PackageMSBuild(MSBuildPackageBase):\n' + inject + '\n    def __init__')
+          with open(liblzma_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {liblzma_path}')
+
+          # --- Patch 8: libunistring windres ---
+          with open(libunistring_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          if 'arm64' not in s.lower():
+              print(f'Skipping libunistring patch (no arm64 hook needed or already patched)')
+          with open(libunistring_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+
+          # --- Patch 9: libffi ARM64 ---
+          with open(libffi_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          if 'aarch64-w64-mingw32' not in s:
+              print(f'Skipping libffi patch (needs manual review for this Craft revision)')
+          with open(libffi_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+
+          # --- Patch 10: Python ARM64 output dir ---
+          with open(python_path, 'r', encoding='utf-8', newline='') as f:
+              s = f.read()
+          if 'arm64' not in s:
+              s = s.replace('PCbuild/amd64', 'PCbuild/arm64" if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64 else "PCbuild/amd64')
+          with open(python_path, 'w', encoding='utf-8', newline='') as f:
+              f.write(s)
+          print(f'Patched {python_path}')
+
+          print("All patches applied successfully.")
+          '@
+
+          $patchPath = Join-Path $env:RUNNER_TEMP "patch_craft.py"
+          Set-Content -Path $patchPath -Value $patchScript -Encoding ASCII
+          python $patchPath $helperPath $zlibPath $gitBpPath $perlPath $opensslPath $liblzmaPath $libunistringPath $libffiPath $pythonPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Strip CraftRevision so craftmaster doesn't clobber our patches
+          $ini = Get-Content "${{ env.CRAFT_MASTER_CONFIG }}" -Raw
+          $ini = $ini -replace '(?m)^CraftRevision\s*=.*$', ''
+          Set-Content "${{ env.CRAFT_MASTER_CONFIG }}" -Value $ini
+
+      - name: Bootstrap Craft
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          craft craft
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          craft --install-deps nextcloud-client
+
+      - name: Install inkscape
+        shell: pwsh
+        continue-on-error: true
+        run: choco install inkscape --no-progress -y
+
+      - name: Compile nextcloud-client
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          craft --src-dir ${{ github.workspace }} nextcloud-client
+
+      - name: Package installer
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          craft --src-dir ${{ github.workspace }} --package nextcloud-client
+
+      - name: Locate installer
+        id: find_installer
+        shell: pwsh
+        run: |
+          $candidates = Get-ChildItem -Path "${{ github.workspace }}\${{ env.CRAFT_TARGET }}" -Recurse -Include *.exe,*.msi -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match '(?i)nextcloud' -and $_.Length -gt 10MB } |
+                        Sort-Object LastWriteTime -Descending
+          if ($candidates.Count -eq 0) {
+              Write-Error "No installer found!"
+              Get-ChildItem -Path "${{ github.workspace }}\${{ env.CRAFT_TARGET }}\tmp" -Recurse -ErrorAction SilentlyContinue | Format-Table FullName, Length
+              exit 1
+          }
+          $installer = $candidates[0]
+          Write-Host "Found: $($installer.FullName) ($([math]::Round($installer.Length/1MB,1)) MB)"
+          "installer_path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "installer_name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-arm64-${{ env.NEW_VERSION }}
+          path: ${{ steps.find_installer.outputs.installer_path }}
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Nextcloud Desktop ${{ env.NEW_VERSION }} — Windows ARM64"
+          tag_name: "arm64-${{ env.UPSTREAM_TAG }}"
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: true
+          files: ${{ steps.find_installer.outputs.installer_path }}
+          body: |
+            ## Nextcloud Desktop ${{ env.NEW_VERSION }} for Windows ARM64
+
+            Automated native ARM64 build from upstream tag `${{ env.UPSTREAM_TAG }}`.
+
+            ### Install
+            Download the `.exe` below and run it. For Snapdragon laptops, Surface Pro X,
+            and other Windows-on-ARM devices.
+
+            ### Changes from upstream
+            See [nextcloud/desktop ${{ env.UPSTREAM_TAG }}](https://github.com/nextcloud/desktop/releases/tag/${{ env.UPSTREAM_TAG }}) for the full changelog.
+
+            ### Notes
+            - Built natively on GitHub's ARM64 Windows runner
+            - All features enabled (sync, shell extensions, CfAPI virtual files)
+            - WebEngine may be disabled depending on Qt ARM64 binary availability
+
+            ---
+            *Built automatically by [sync-upstream-and-build.yml](https://github.com/${{ github.repository }}/actions/workflows/sync-upstream-and-build.yml)*
