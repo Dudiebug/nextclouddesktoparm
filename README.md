@@ -1,121 +1,74 @@
 <!--
+  - SPDX-FileCopyrightText: 2026 Dudiebug
   - SPDX-FileCopyrightText: 2017 Nextcloud GmbH and Nextcloud contributors
   - SPDX-FileCopyrightText: 2011 Nextcloud GmbH and Nextcloud contributors
   - SPDX-License-Identifier: GPL-2.0-or-later
 -->
-# Nextcloud Desktop Client
+# Native Windows ARM64 build of Nextcloud Desktop Client
 
-[![REUSE status](https://api.reuse.software/badge/github.com/nextcloud/desktop)](https://api.reuse.software/info/github.com/nextcloud/desktop)
+A personal build of [`nextcloud/desktop`](https://github.com/nextcloud/desktop) with native Windows on ARM support. Runs on Snapdragon X Elite, Surface Pro X, and similar devices **without** Prism x64 emulation.
 
-The Nextcloud Desktop Client is an app to synchronize files from Nextcloud Server with your computer.
+**[⬇ Download the installer](../../releases/latest)**
 
-<p align="center">
-    <img src="doc/images/main_dialog_christine.png" alt="Desktop Client on Windows" width="450">
-</p>
+---
 
-## Downloads 🚀
-For the latest stable and recommended version, please refer to [the official download page](https://nextcloud.com/install/#install-clients).
+## Heads up before you install
 
-## Contributing 🫴
-:v: Please read the [Code of Conduct](https://nextcloud.com/community/code-of-conduct/). This document offers some guidance to ensure Nextcloud participants can cooperate effectively in a positive and inspiring atmosphere and to explain how together we can strengthen and support each other.
+I built this for myself. I'm not a developer — the entire port was written by [Claude Code](https://www.anthropic.com/claude-code) (Opus 4.6) under my direction, because I wanted native ARM64 sync on my Windows on ARM device and upstream doesn't ship it.
 
-## Join the team 👪
-There are many ways to contribute, of which development is only one! Find out [how to get involved](https://nextcloud.com/contribute/), including as a translator, designer, tester, helping others, and much more! 😍
+**This is not a maintained product.** I can't meaningfully review contributor PRs, I can only fix bugs that Claude can help me fix, and I cannot support thousands of users. If you need production-grade Nextcloud sync on Windows on ARM today, use the [official upstream build under Prism emulation](https://nextcloud.com/install/#install-clients).
 
-## Help testing 🔬
-Download and install the client:
+If you want to try it anyway, great — here's what to expect.
 
-- [All releases](https://github.com/nextcloud-releases/desktop/releases)<br>
-- [Daily builds](https://download.nextcloud.com/desktop/daily)
+## Install
 
-## Reporting issues 🐛
-If you find any bugs or have any suggestion for improvement, please
-[open an issue in this repository](https://github.com/nextcloud/desktop/issues).
+1. Download `Nextcloud-*-arm64-setup.exe` from the [Releases page](../../releases/latest)
+2. Run it. SmartScreen will flag it (unsigned, new binary) — click **More info** → **Run anyway**
+3. Sign in with your Nextcloud server URL and credentials
 
-## Bug fixing and development 🛠️
+### Verify it's actually native
 
-> [!TIP]
-> For contributors on macOS, there is an [Xcode workspace](./Nextcloud%20Desktop%20Client.xcworkspace/) prepared for development.
-> See [the dedicated documentation](./doc/xcode-workspace.md) for further information.
+Open **Task Manager** → **Details** tab → right-click any column header → **Select columns** → enable **Architecture**. The `nextcloud.exe` process should show **ARM64**, not **x64**. If it shows x64 you somehow installed the wrong build.
 
-> [!TIP]
-> For building the client on macOS we have a tool called `mac-crafter`.
-> You will find more information about it in [its dedicated README](admin/osx/mac-crafter/README.md).
-> Also, please note the [README in the NextcloudIntegration project](shell_integration/MacOSX/NextcloudIntegration/README.md) which provides an even more convenient way to work on and build the desktop client on macOS by using Xcode.
+## Why a native build matters on Windows on ARM
 
-> [!NOTE]  
-> Find the system requirements and instructions on [how to work on Windows with KDE Craft](https://github.com/nextcloud/desktop-client-blueprints/) on our [desktop client blueprints repository](https://github.com/nextcloud/desktop-client-blueprints/).
+File sync is the worst case for x64-on-ARM emulation:
 
-### System requirements
-- [Windows 10, Windows 11](https://github.com/nextcloud/desktop-client-blueprints/), macOS 10.14 Mojave (or newer) or Linux
-- [🔽 Inkscape (to generate icons)](https://inkscape.org/release/)
-- Developer tools: cmake, clang/gcc/g++:
-- Qt6 since 3.14, Qt5 for earlier versions
-- OpenSSL
-- [🔽 QtKeychain](https://github.com/frankosterfeld/qtkeychain)
-- SQLite
-- [Xcode](https://developer.apple.com/xcode/) (only on macOS)
+- **Syscall-heavy workload.** Every file operation crosses the emulation boundary.
+- **Always-on background process.** Emulated processes drain ARM laptop batteries noticeably faster than native ones.
+- **Shell extensions are fragile.** File Explorer overlay icons and context menus run through shell extension DLLs, and emulated shell extensions have [known compatibility issues](https://learn.microsoft.com/en-us/windows/arm/arm64x-build) on Windows on ARM.
 
-Optional recommendations:
+A native build fixes all three.
 
-- [Qt Creator IDE](https://www.qt.io/product/development-tools)
-- [delta: A viewer for git and diff output](https://github.com/dandavison/delta)
+## Dear Nextcloud team, or any Windows / C++ developer reading this
 
-### Build
+**Please take these patches upstream.** They're small, cleanly scoped, and the entire reason this repo is public. Everything added to the upstream tree:
 
-Step by step instructions on how to build the client to contribute.
+| File | Change |
+|---|---|
+| `craftmaster.ini` | New `[windows-msvc2022_arm64-cl]` KDE Craft target |
+| `admin/win/msi/CMakeLists.txt` | Detect ARM64 via `CMAKE_SYSTEM_PROCESSOR` — the existing pointer-size check was broken (x64 and ARM64 are both 8 bytes) |
+| `admin/win/msi/Platform.wxi` | New `arm64` WiX platform branch using `ProgramFiles64Folder` |
+| `src/libsync/vfs/cfapi/shellext/CMakeLists.txt` | ARM64 Windows SDK tools path resolution |
+| `.github/workflows/windows-arm64-release.yml` | New workflow on `windows-11-arm` runners; builds via Craft and publishes a GitHub Release on `v*-arm64*` tag push |
 
-1. Clone the Github repository: `git clone https://github.com/nextcloud/desktop.git`
-2. Create build directory: `mkdir <build directory>`
-3. Navigate into build directory: `cd <build directory>`
-4. Compile: `cmake -S <cloned desktop repo> -B build -DCMAKE_PREFIX_PATH=<dependencies> -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=. -DNEXTCLOUD_DEV=ON`
+The remaining work — which needs someone who can actually code — is in [`nextcloud/craft-blueprints-kde`](https://github.com/nextcloud/craft-blueprints-kde) and [`nextcloud/desktop-client-blueprints`](https://github.com/nextcloud/desktop-client-blueprints): making sure every transitive build dependency has an ARM64 build rule. I have no way to evaluate the size of that effort. A developer with access to a Windows on ARM device and the existing Craft toolchain could probably find out in an afternoon.
 
-> [!TIP]
-> The cmake variable NEXTCLOUD_DEV allows you to run your own build of the client while developing in parallel with an installed version of the client.
+**This repo will be archived the moment upstream ships native Windows ARM64.** That is the entire goal.
 
-Then you might continue with these steps:
-	
-1. 🐛 [Pick a good first issue](https://github.com/nextcloud/desktop/labels/good%20first%20issue)
-2. 👩‍🔧 Create a branch and make your changes. Remember to sign off your commits using `git commit -sm "Your commit message"`
-3. ⬆ Create a [pull request](https://opensource.guide/how-to-contribute/#opening-a-pull-request) and `@mention` the people from the issue to eview
-4. 👍 Fix things that come up during a review
-5. 🎉 Wait for it to get merged!
+## Issues
 
-### Test servers
+- **ARM64-specific bugs** (crashes on ARM, shell integration broken on ARM, installer won't run) → [open an issue](../../issues). No promises on response time.
+- **Everything else** (sync logic, UI bugs, features, auth, server compatibility) → [report upstream at `nextcloud/desktop`](https://github.com/nextcloud/desktop/issues). Those bugs live in the upstream code, not in these ARM64 patches.
 
-The easiest way to have a local Nextcloud server to develop, debug and test the client against is [the Nextcloud Docker image](https://github.com/nextcloud/docker).
-The following example shows how to deploy a Nextcloud Docker container on the local host which will be removed again as soon as the command is interrupted.
-Note that this requires Docker to be installed in your developer environment.
+When filing an ARM64 issue please include: Windows version and build number, device (Surface Pro X / Snapdragon X Elite laptop / VM), Nextcloud server version, and whether Task Manager shows the process as ARM64 or x64.
 
-```bash
-docker run \
-    --rm \
-    --publish 8080:80 \
-    --env SQLITE_DATABASE=nextcloud.sqlite \
-    --env NEXTCLOUD_ADMIN_USER=admin \
-    --env NEXTCLOUD_ADMIN_PASSWORD=admin \
-    nextcloud
-```
+## Relationship to upstream
 
-This simple test server already suffices in the most cases. For more advanced server test deployments we also recommend [Nextcloud development environment on Docker Compose](https://juliusknorr.github.io/nextcloud-docker-dev/).
+Soft fork of [`nextcloud/desktop`](https://github.com/nextcloud/desktop). Tracks upstream closely. Only adds the files in the table above. All credit for the Nextcloud Desktop Client itself belongs to the Nextcloud team and upstream contributors.
 
-## Get in touch 💬
-* [📋 Forum](https://help.nextcloud.com)
-* [🐘 Mastodon](https://mastodon.xyz/@nextcloud)
-* [🔗 LinkedIn](https://www.linkedin.com/company/nextcloud-gmbh/)
-* [🦋 Bluesky](https://bsky.app/profile/nextcloud.bsky.social)
-* [👥 Facebook](https://www.facebook.com/nextclouders)
+For everything else — full documentation, build instructions, contributor guide, code of conduct, community channels, professional support, test server setup — please see the [upstream repository](https://github.com/nextcloud/desktop) and the [official Nextcloud website](https://nextcloud.com).
 
-You can also [get professional support for Nextcloud and the desktop client](https://nextcloud.com/support)!
+## License
 
-## License 📜
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful, but
-    WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-    or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
-    for more details.
+GPL-2.0-or-later, same as upstream. See [`COPYING`](COPYING).
