@@ -44,18 +44,121 @@ A native build fixes all three.
 
 **Please take this upstream.** The entire "port" is one Python script — [`.github/scripts/patch-craft-arm64.py`](.github/scripts/patch-craft-arm64.py) — that makes 10 small fixes to upstream KDE Craft and its dependency blueprints so `craft --install-deps nextcloud-client` succeeds on a Windows ARM64 host. **None of the patches touch a single line of Nextcloud source code.** Every fix is in upstream Craft or `craft-blueprints-kde`.
 
-### What the script fixes
+### The core problem
 
-1. **`CraftSetupHelper.getMSVCEnv`** — adds `arm64` / `x86_arm64` entries to the MSVC architecture dicts so Craft knows how to set up an ARM64 compile environment
-2. **`libs/zlib/zlib.py`** — rewrites the dead `zlib.net` download URL to the equivalent GitHub release asset (unrelated to ARM64, but blocks the whole build)
-3. **`dev-utils/_windows/git/git.py::locateGit()`** — handles the Git for Windows ARM64 layout (`Git\clangarm64\bin\git.exe`) so `dev-utils/patch` and `dev-utils/sed` still resolve
-4. **`dev-utils/perl/perl.py` (`CRAFT_WIN64`)** — leaves `CRAFT_WIN64` empty for arm64 so Perl 5.40's `win32/Makefile` can self-configure (without this, miniperl.exe crashes with `0xc0000005`)
-5. **`dev-utils/perl/perl.py` (`_globEnv`)** — adds the perl source root to `PATH` so the Makefile's bare `miniperl` invocation resolves (modern cmd.exe doesn't search the cwd)
-6. **`libs/openssl/openssl.py`** — selects OpenSSL's `VC-WIN64-ARM` Configure target for arm64 (upstream falls back to `VC-WIN32`, producing a broken 32-bit x86 OpenSSL on ARM64)
-7. **`libs/liblzma/liblzma.py`** — clones the x64 sections of xz 5.2.3's `xz_win.sln`, `liblzma.vcxproj`, and `liblzma_dll.vcxproj` as arm64 siblings so MSBuild accepts `/p:Platform=arm64`
-8. **`libs/libunistring/libunistring.py`** — installs a `windres` wrapper that fixes the COFF machine header bytes from `0x8664` (x86) to `0xaa64` (arm64) on resource object files
-9. **`libs/libffi/libffi.py`** — sets the `aarch64-w64-mingw32` platform triple and `-marm64` CCAS flag
-10. **`libs/python/python.py`** — swaps `PCbuild/amd64` for `PCbuild/arm64` in `install()` (Python's build system uses arch-suffixed output dirs)
+KDE Craft — the build system Nextcloud uses on Windows — has **zero ARM64 Windows support**. It only knows about x86 and x86_64. Every patch below is fixing a place where the code assumed *Windows = x86 or x64*.
+
+### What the script patches
+
+**Patch 1 — `CraftSetupHelper.py`: MSVC architecture mapping**
+
+Adds `arm64` entries to the `architectures` dictionary that maps Craft's architecture enum to `vcvarsall.bat` arguments.
+
+*Why:* Without this, Craft crashes immediately on ARM64 Windows with `KeyError: <Architecture.arm64: 40>` — the MSVC compiler environment can't be initialized at all.
+
+- **Before:** only knows `x86 → "x86"` and `x86_64 → "amd64"`
+- **After:** also knows `arm64 → "arm64"` (native) and `arm64 → "x86_arm64"` (cross)
+
+---
+
+**Patch 2 — `libs/zlib/zlib.py`: dead download URL**
+
+Replaces `https://www.zlib.net/zlib-{ver}.tar.xz` with the GitHub release URL.
+
+*Why:* zlib.net moves old versions to `/fossils/` when a new version ships, 404-ing the hard-coded URL. Not ARM64-specific — just broken for everyone using this pinned Craft revision.
+
+---
+
+**Patch 3 — `dev-utils/_windows/git/git.py`: Git for Windows ARM64 layout**
+
+Fixes `locateGit()` to handle the ARM64 directory structure.
+
+*Why:* x64 Git for Windows puts `git.exe` at `Git\bin\git.exe`. ARM64 Git puts it at `Git\clangarm64\bin\git.exe` but keeps the MSYS tools at `Git\usr\bin`. Craft's `dev-utils/patch` and `dev-utils/sed` locate themselves relative to `git.exe`'s parent directory, so on ARM64 they look in `Git\clangarm64\usr\bin\` — which doesn't exist. The patch detects the ARM64 layout and adjusts the path.
+
+---
+
+**Patch 4 — `dev-utils/perl/perl.py` (`CRAFT_WIN64` flag)**
+
+Changes `CRAFT_WIN64` from `"undef"` to `""` (empty, meaning auto-detect) for ARM64.
+
+*Why:* Perl 5.40's Makefile auto-detects ARM64 and sets `WIN64=define` when it sees `PROCESSOR_ARCHITECTURE=ARM64`. But Craft forces `WIN64=undef` for anything that isn't x86_64, which makes Perl compile as 32-bit. The resulting `miniperl.exe` crashes with `0xc0000005` (access violation) because it's a 64-bit ARM64 binary with 32-bit pointer assumptions.
+
+---
+
+**Patch 5 — `dev-utils/perl/perl.py` (PATH for miniperl)**
+
+Adds Perl's source directory to `PATH` during the build.
+
+*Why:* Perl's Makefile runs `cd .. && miniperl -Ilib make_patchnum.pl` using a bare `miniperl` command. Modern Windows cmd.exe doesn't search the current directory for executables, so even though `miniperl.exe` is right there, the build fails with `'miniperl' is not recognized`. Adding the source dir to `PATH` fixes it.
+
+---
+
+**Patch 6 — `libs/openssl/openssl.py`: ARM64 Configure target**
+
+Adds `VC-WIN64-ARM` as the OpenSSL Configure target for ARM64.
+
+*Why:* The blueprint only knows `VC-WIN64A` (x64) and `VC-WIN32` (x86). On ARM64 it falls through to `VC-WIN32`, which configures OpenSSL for 32-bit x86 — enabling x86 assembly (SSE2, AES-NI), generating NASM rules for `.asm` files, and setting `-DOPENSSL_IA32_SSE2`. The resulting objects can't link with the rest of the ARM64 build. OpenSSL already has a `VC-WIN64-ARM` target that uses ARM64 perlasm modules.
+
+---
+
+**Patch 7 — `libs/liblzma/liblzma.py`: ARM64 MSBuild platform**
+
+Injects a `configure()` method that clones the x64 platform configurations as ARM64 in the `.sln` and `.vcxproj` files.
+
+*Why:* xz 5.2.3 predates Windows-on-ARM. Its project files only declare `Win32` and `x64` platforms. When Craft passes `/p:Platform=arm64` to MSBuild, it fails with `MSB4126: The specified solution configuration 'Release|arm64' is invalid`. Since xz is pure C with no x86 assembly, cloning the x64 config and renaming to arm64 is sufficient — MSBuild's v143 toolset handles ARM64 codegen automatically.
+
+---
+
+**Patch 8 — `libs/libunistring/libunistring.py`: `windres` ARM64 wrapper**
+
+Installs a Python wrapper script that runs `windres` and patches the output COFF machine type from AMD64 to ARM64.
+
+*Why:* MSYS2's `windres` (GNU binutils 2.46) doesn't support `pe-arm64-little`. It can compile `.rc` resource files but stamps the output as AMD64. The wrapper intercepts the output and rewrites the 2-byte machine type field from `0x8664` (AMD64) to `0xAA64` (ARM64) so the linker accepts it.
+
+---
+
+**Patch 9 — `libs/libffi/libffi.py`: ARM64 platform triple and assembler**
+
+Sets the autotools platform triple to `aarch64-w64-mingw32` and adds `-marm64` to the CCAS (C-compatible assembler) flags.
+
+*Why:* Craft's `AutoToolsBuildSystem` hardcodes `x86_64-w64-mingw32` as the platform triple. libffi has architecture-specific assembly (closures, trampolines), so it needs the correct triple to select the ARM64 codepaths. The `-marm64` flag tells `msvcc.sh` (the MSVC compatibility wrapper) to produce ARM64 objects.
+
+---
+
+**Patch 10 — `libs/python/python.py`: PCbuild output directory**
+
+Changes hardcoded `PCbuild/amd64/` paths to `PCbuild/arm64/` when building for ARM64.
+
+*Why:* Python's MSBuild puts compiled binaries in `PCbuild/{arch}/`. The Craft blueprint hardcodes `PCbuild/amd64/` for the `install()` step that copies `python.exe`, `*.dll`, `*.lib`, and `*.pyd` files. On ARM64 the output is in `PCbuild/arm64/`, so the install step can't find anything.
+
+### Additional patches applied at the build-workflow level
+
+These three fixes aren't in the script itself — they're applied by the CI workflow (present on the `claude/arm-windows-build-dh7Rx` and `arm64/v33.0.2` branches) because they're either more invasive or tied to install-time packaging rather than dependency compilation:
+
+**Patch 11 — `libs/libjpeg-turbo/libjpeg-turbo.py`: disable SIMD**
+
+Adds `-DWITH_SIMD=OFF` for ARM64. libjpeg-turbo's SIMD code uses x86 NASM assembly that won't compile on ARM64.
+
+**Patch 12 — `libs/pixman/pixman.py`: disable x86 SIMD**
+
+Adds `-Dmmx=disabled -Dsse2=disabled -Dssse3=disabled -Da64-neon=disabled`. Pixman's `meson.build` unconditionally enables MMX for MSVC, which pulls in `<mmintrin.h>` — an x86-only header that doesn't exist on ARM64.
+
+**Patch 13 — NSIS packager + installer blueprint**
+
+Treats ARM64 as 64-bit for `PROGRAMFILES64`, adds a Start Menu shortcut, Nextcloud icon, version number, and a "Launch after install" checkbox. Not a compilation fix — an installer polish fix.
+
+### Summary
+
+| Category | Patches | Root cause |
+|---|---|---|
+| Craft doesn't know ARM64 exists | 1 | Architecture enum missing |
+| Build tools assume x86/x64 layout | 3, 5 | Git paths, `PATH` search |
+| Dependencies hardcode x86/x64 | 4, 6, 7, 8, 9, 10 | Platform detection, assembly, output dirs |
+| SIMD / assembly is x86-only | 11, 12 | MMX / SSE / NASM intrinsics |
+| Broken URL (not ARM64-related) | 2 | Dead `zlib.net` link |
+| Installer polish | 13 | NSIS defaults |
+
+**Zero patches to the Nextcloud client source code itself.** Every fix is in the build system (KDE Craft) or third-party dependency blueprints.
 
 ### How to use it
 
