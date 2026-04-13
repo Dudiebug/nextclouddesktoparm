@@ -26,10 +26,6 @@ If you want to try it anyway, great — here's what to expect.
 2. Run it. SmartScreen will flag it (unsigned, new binary) — click **More info** → **Run anyway**
 3. Sign in with your Nextcloud server URL and credentials
 
-### Verify it's actually native
-
-Open **Task Manager** → **Details** tab → right-click any column header → **Select columns** → enable **Architecture**. The `nextcloud.exe` process should show **ARM64**, not **x64**. If it shows x64 you somehow installed the wrong build.
-
 ## Why a native build matters on Windows on ARM
 
 File sync is the worst case for x64-on-ARM emulation:
