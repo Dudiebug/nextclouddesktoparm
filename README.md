@@ -14,13 +14,13 @@
 
 **The release page is the source of truth for available installers.** A source branch or a running workflow does not mean an installer is ready.
 
-The update to **Nextcloud Desktop 34.0.4** is being built on [`arm64/v34.0.4`](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64/v34.0.4). Do not treat it as a published or tested Windows ARM64 release until its installer appears in Releases. The previous published build is `v33.0.2-arm64`.
+New upstream stable releases are detected automatically. Each version is built from the exact upstream release tag on an `arm64/vX.Y.Z` branch, and a Windows ARM64 release is published only if the full build, client tests, and native ARM64 binary validation succeed. The Releases page remains the source of truth for what is actually available.
 
 ## What is this project?
 
 This project packages the [Nextcloud Desktop Client](https://github.com/nextcloud/desktop) for **Windows ARM64 / AArch64**. It provides a native Windows-on-ARM alternative to running an x64 client under emulation. It is not a Linux ARM build, an Android client, or a Nextcloud server package.
 
-The ARM64 work is a compatibility layer for KDE Craft, dependency build recipes, and installer packaging. The 34.0.4 source branch starts from upstream release commit `ece94a644d472542f841124067f75cf284899c67`; the port does not modify Nextcloud's sync-engine source.
+The ARM64 work is a compatibility layer for KDE Craft, dependency build recipes, and installer packaging. Release branches start from the corresponding upstream Nextcloud release commit; the port does not intentionally modify Nextcloud's sync-engine source.
 
 No comparative battery-life or performance benchmark is claimed. Hardware listed here is the intended platform, not a certification that every device and feature has been tested.
 
@@ -36,11 +36,20 @@ For an official supported distribution, see [Nextcloud's client downloads](https
 
 ## Build and release development
 
-The 34.0.4 build targets Windows 11 ARM64 using MSVC 2022, Qt 6.10.2, and GitHub's `windows-11-arm` runner. Build tooling for this update lives on the [release branch](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64/v34.0.4), rather than the older source snapshot on `master`.
+The ARM64 build runs on GitHub's native Windows ARM runner and reads the Craft URL, immutable Craft revision, and Nextcloud/KDE blueprint revisions from the selected upstream source's own `craftmaster.ini`. This avoids hardcoding a specific Nextcloud release series into the ARM64 overlay.
 
-The build reads the Craft URL and revision from the selected upstream source's `craftmaster.ini`. ARM compatibility fixes cover compiler environment selection, Git paths, Perl, OpenSSL, liblzma, libunistring, libffi, Python, libjpeg-turbo, pixman, and NSIS packaging. The old zlib download-URL workaround is omitted for 34.0.4 because its pinned Craft revision already contains that fix.
+ARM compatibility fixes cover compiler environment selection, Git paths, Perl, OpenSSL, liblzma, libunistring, libffi, Python, libjpeg-turbo, pixman, and NSIS packaging. Build tooling is maintained on the `arm64-tooling` branch and copied onto each clean upstream source branch.
 
-Build scripts are under [`.github/scripts`](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64/v34.0.4/.github/scripts). Their regression tests run with:
+### Automatic upstream tracking
+
+Two scheduled workflows keep the project aligned with Nextcloud:
+
+- **Stable release watcher:** checks upstream every six hours. When Nextcloud publishes a new stable `vX.Y.Z` release, it creates `arm64/vX.Y.Z` from that exact upstream tag, overlays the ARM64 tooling, and dispatches the full Windows ARM64 build. If all validation passes, the build publishes `vX.Y.Z-arm64`.
+- **Upstream-main canary:** checks upstream `master` daily. When its commit changes, the same ARM64 build is run on `canary/upstream-main`, but the release-publishing step is disabled. This provides early warning when upstream changes break the ARM64 compatibility layer.
+
+Failed release branches are not rebuilt forever on a timer. After a build fix, the stable watcher can be manually dispatched with `rebuild_existing=true`.
+
+Build scripts are under [`.github/scripts`](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64-tooling/.github/scripts). Their regression tests run with:
 
 ```text
 python -m unittest discover -s .github/scripts/tests -v
