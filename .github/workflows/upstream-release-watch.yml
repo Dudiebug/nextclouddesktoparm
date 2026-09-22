@@ -1,0 +1,113 @@
+# SPDX-FileCopyrightText: 2026 Dudiebug
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Track upstream stable releases
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: 'Optional upstream stable tag, for example v34.0.5'
+        required: false
+        type: string
+      rebuild_existing:
+        description: 'Replace an existing ARM64 release branch and run it again'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: upstream-arm64-release-watch
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Find a new upstream stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_VERSION: ${{ inputs.force_version }}
+          REBUILD_EXISTING: ${{ inputs.rebuild_existing }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${FORCE_VERSION:-}" ]]; then
+            upstream_tag="$FORCE_VERSION"
+          else
+            upstream_tag="$(gh api repos/nextcloud/desktop/releases/latest --jq '.tag_name')"
+          fi
+
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected upstream stable tag: $upstream_tag"
+            exit 1
+          fi
+
+          arm_branch="arm64/$upstream_tag"
+          arm_release="$upstream_tag-arm64"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "arm_branch=$arm_branch" >> "$GITHUB_OUTPUT"
+          echo "arm_release=$arm_release" >> "$GITHUB_OUTPUT"
+
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$arm_release" >/dev/null 2>&1 && [[ "${REBUILD_EXISTING:-false}" != "true" ]]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Already published: $arm_release"
+            exit 0
+          fi
+
+          if git ls-remote --exit-code origin "refs/heads/$arm_branch" >/dev/null 2>&1 && [[ "${REBUILD_EXISTING:-false}" != "true" ]]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Branch $arm_branch already exists without a published release."
+            echo "Use workflow_dispatch with rebuild_existing=true after fixing the build."
+            exit 0
+          fi
+
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create ARM64 branch from the exact upstream release tag
+        if: steps.release.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+          ARM_BRANCH: ${{ steps.release.outputs.arm_branch }}
+          REBUILD_EXISTING: ${{ inputs.rebuild_existing }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ARM64 Release Bot'
+          git config user.email 'actions@users.noreply.github.com'
+
+          git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
+          git fetch upstream "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+          git fetch origin arm64-tooling
+
+          upstream_commit="$(git rev-list -n 1 "$UPSTREAM_TAG")"
+          test -n "$upstream_commit"
+          git checkout -B "$ARM_BRANCH" "$upstream_commit"
+
+          git checkout origin/arm64-tooling -- .github/scripts .github/workflows/arm64-release.yml
+          mkdir -p .github
+          printf '%s\n' "$UPSTREAM_TAG" > .github/arm64-release-version
+
+          git add .github
+          git commit -m "build: prepare Windows ARM64 $UPSTREAM_TAG"
+          if [[ "${REBUILD_EXISTING:-false}" == "true" ]]; then
+            git push origin "HEAD:refs/heads/$ARM_BRANCH" --force
+          else
+            git push origin "HEAD:refs/heads/$ARM_BRANCH"
+          fi
+
+          # Pushes made by GITHUB_TOKEN do not recursively trigger workflows.
+          # Dispatch the build explicitly on the newly-created source branch.
+          gh workflow run arm64-release.yml --ref "$ARM_BRANCH"
