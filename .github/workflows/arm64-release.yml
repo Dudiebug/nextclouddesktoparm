@@ -117,6 +117,19 @@ jobs:
           $armConfig = $armConfig -replace '^\s*CraftRevision\s*=.*$', "CraftRevision = $patchedRevision"
           Set-Content -Path "${{ github.workspace }}\craftmaster-arm64.ini" -Value $armConfig -Encoding utf8
 
+          @"
+
+[windows-msvc2022_arm64-cl]
+Packager/PackageType = NullsoftInstallerPackager
+QtSDK/Compiler = msvc2022_arm64
+General/ABI = windows-msvc2022_arm64-cl
+ShortPath/DriveLetter = Q:
+Packager/RepositoryUrl = https://download.nextcloud.com/desktop/development/craftCache-arm64/
+Packager/CacheVersion = stable-34.0-qt-6.10.2-arm64
+Packager/UseCache = False
+Packager/CreateCache = False
+"@ | Add-Content -Path "${{ github.workspace }}\craftmaster-arm64.ini" -Encoding utf8
+
           Write-Host "Upstream Craft revision: $craftRev"
           Write-Host "Patched local Craft revision: $patchedRevision"
 
