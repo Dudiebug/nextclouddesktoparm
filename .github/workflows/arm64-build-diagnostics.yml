@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: ARM64 Build Diagnostics
+on:
+  push:
+    branches: ['arm64/v34.0.4']
+    paths: ['.github/workflows/arm64-build-diagnostics.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Extract dependency failure context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/actions/jobs/106871093235/logs" > "$RUNNER_TEMP/previous-build.log"
+          echo '=== Last 100 log lines ==='
+          tail -n 100 "$RUNNER_TEMP/previous-build.log"
+          echo '=== Last 30 failure matches ==='
+          grep -nE '(error:|error C[0-9]|fatal error|FAILED:|Craft stopped|failed with|Error [0-9]|\*\*\*.*Error)' "$RUNNER_TEMP/previous-build.log" | tail -n 30 || true
