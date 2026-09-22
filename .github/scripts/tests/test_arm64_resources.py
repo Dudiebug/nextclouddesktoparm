@@ -9,7 +9,7 @@ from unittest.mock import patch as mock_patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from arm64_windres import Options, compile_resource, parse_arguments, windows_path
-from patch_arm64_resources import patch
+from patch_arm64_resources import apply, patch
 
 
 class ResourceTests(unittest.TestCase):
@@ -55,6 +55,27 @@ class ResourceTests(unittest.TestCase):
     def test_unexpected_blueprint_rejected(self):
         with self.assertRaises(ValueError):
             patch('class Package(CMakePackageBase):\n    pass\n')
+
+    def test_helper_is_kept_outside_blueprint_recipe_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            craft = Path(directory) / "craft-clone"
+            blueprint_dir = craft / "blueprints/libs/libunistring"
+            blueprint_dir.mkdir(parents=True)
+            blueprint = blueprint_dir / "libunistring.py"
+            blueprint.write_text(
+                "import info\nclass Package(AutoToolsPackageBase):\n    pass\n",
+                encoding="utf-8",
+            )
+            helper = Path(directory) / "arm64_windres.py"
+            helper.write_text("print('helper')\n", encoding="utf-8")
+
+            apply(craft, helper)
+
+            self.assertTrue((craft / "bin/arm64_windres.py").is_file())
+            self.assertFalse((blueprint_dir / "arm64_windres.py").exists())
+            patched = blueprint.read_text(encoding="utf-8")
+            self.assertIn('CraftCore.standardDirs.craftRoot()', patched)
+            self.assertIn('"craft" / "bin" / "arm64_windres.py"', patched)
 
     def test_native_sdk_command_and_machine_check(self):
         with tempfile.TemporaryDirectory() as directory:
