@@ -202,6 +202,7 @@ jobs:
           name: Nextcloud Desktop ${{ steps.version.outputs.version }} for Windows ARM64
           draft: false
           prerelease: false
+          make_latest: true
           files: release-output/*
           body: |
             Unofficial native Windows ARM64 build of Nextcloud Desktop ${{ steps.version.outputs.version }}.
