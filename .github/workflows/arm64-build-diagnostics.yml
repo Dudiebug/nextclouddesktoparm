@@ -20,8 +20,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${REPOSITORY}/actions/jobs/106871093235/logs" > "$RUNNER_TEMP/previous-build.log"
-          echo '=== Last 100 log lines ==='
-          tail -n 100 "$RUNNER_TEMP/previous-build.log"
-          echo '=== Last 30 failure matches ==='
-          grep -nE '(error:|error C[0-9]|fatal error|FAILED:|Craft stopped|failed with|Error [0-9]|\*\*\*.*Error)' "$RUNNER_TEMP/previous-build.log" | tail -n 30 || true
+          gh api --allow-escape-sequences "repos/${REPOSITORY}/actions/jobs/106871093235/logs" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' > "$RUNNER_TEMP/previous-build.log"
+          echo '=== Last 80 log lines ==='
+          tail -n 80 "$RUNNER_TEMP/previous-build.log"
+          echo '=== Last 20 failure matches ==='
+          grep -nE '(error:|error C[0-9]|fatal error|FAILED:|Craft stopped|failed with|Error [0-9]|\*\*\*.*Error)' "$RUNNER_TEMP/previous-build.log" | tail -n 20 || true
