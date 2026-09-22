@@ -88,6 +88,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python '.github/scripts/patch_arm64_resources.py' $clone
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python '.github/scripts/patch_runtime_arm64.py' (Join-Path $clone 'blueprints/libs/runtime/runtime.py')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Commit NSIS changes before CraftMaster's forced revision checkouts.
           python '.github/scripts/patch-nsis-and-blueprint.py' $clone
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
