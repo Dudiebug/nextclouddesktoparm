@@ -69,7 +69,7 @@ class ResourceTests(unittest.TestCase):
             with mock_patch('arm64_windres.shutil.which', side_effect=lambda name: name), \
                  mock_patch('arm64_windres.subprocess.run', side_effect=run):
                 compile_resource(Options(str(source), str(output)))
-            self.assertEqual(commands[0][-1], str(source))
+            self.assertEqual(commands[0][-1], str(source.resolve(strict=True)))
             self.assertNotIn('-', commands[0])
             self.assertIn('/MACHINE:ARM64', commands[1])
 
