@@ -3,6 +3,9 @@
 name: Test ARM64 overlay against upstream main
 
 on:
+  push:
+    branches: ['master']
+    paths: ['.github/workflows/upstream-main-canary.yml']
   schedule:
     - cron: '47 7 * * *'
   workflow_dispatch:
@@ -40,9 +43,9 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
 
           git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
-          git fetch upstream master
-          git fetch origin arm64-tooling
-          git fetch origin canary/upstream-main 2>/dev/null || true
+          git fetch upstream '+refs/heads/master:refs/remotes/upstream/master'
+          git fetch origin '+refs/heads/arm64-tooling:refs/remotes/origin/arm64-tooling'
+          git fetch origin '+refs/heads/canary/upstream-main:refs/remotes/origin/canary/upstream-main' 2>/dev/null || true
 
           upstream_sha="$(git rev-parse upstream/master)"
           previous_sha="$(git show origin/canary/upstream-main:.github/upstream-main-sha 2>/dev/null || true)"
