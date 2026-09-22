@@ -10,7 +10,12 @@ from pathlib import Path
 import re
 import sys
 
+# Keep the CraftMaster target key stable so existing workflow paths/caches and
+# command lines continue to resolve, but select the compiler ABI actually
+# installed on GitHub's migrated Windows 11 ARM64 runner.
 TARGET = "windows-msvc2022_arm64-cl"
+COMPILER_ABI = "windows-msvc2026_arm64-cl"
+QT_COMPILER = "msvc2026_arm64"
 
 
 def configure(source: str, revision: str, python_directory: str) -> str:
@@ -29,8 +34,8 @@ def configure(source: str, revision: str, python_directory: str) -> str:
         config.add_section(TARGET)
     config[TARGET].update({
         "Packager/PackageType": "NullsoftInstallerPackager",
-        "QtSDK/Compiler": "msvc2022_arm64",
-        "General/ABI": TARGET,
+        "QtSDK/Compiler": QT_COMPILER,
+        "General/ABI": COMPILER_ABI,
         "Paths/Python": python_directory,
         "ShortPath/DriveLetter": "Q:",
         "Packager/UseCache": "False",
@@ -56,7 +61,7 @@ def main() -> None:
     result = configure(args.source.read_text(encoding="utf-8-sig"), args.revision,
                        str(Path(sys.executable).parent))
     args.output.write_text(result, encoding="utf-8", newline="\n")
-    print(f"Configured {TARGET} at Craft revision {args.revision}")
+    print(f"Configured {TARGET} for {COMPILER_ABI} at Craft revision {args.revision}")
 
 
 if __name__ == "__main__":

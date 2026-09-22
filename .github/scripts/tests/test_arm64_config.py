@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from arm64_config import TARGET, configure
+from arm64_config import COMPILER_ABI, QT_COMPILER, TARGET, configure
 
 SOURCE = """[General]
 CraftUrl = https://github.com/nextcloud/craft.git
@@ -42,8 +42,13 @@ class Arm64ConfigTests(unittest.TestCase):
 
     def test_missing_arm_target_is_added(self):
         self.assertNotIn(TARGET, parse(SOURCE))
-        self.assertEqual(self.config[TARGET]["General/ABI"], TARGET)
-        self.assertEqual(self.config[TARGET]["QtSDK/Compiler"], "msvc2022_arm64")
+        self.assertEqual(self.config[TARGET]["General/ABI"], COMPILER_ABI)
+        self.assertEqual(self.config[TARGET]["QtSDK/Compiler"], QT_COMPILER)
+
+    def test_migrated_runner_uses_vs2026_compiler(self):
+        self.assertEqual(COMPILER_ABI, "windows-msvc2026_arm64-cl")
+        self.assertEqual(QT_COMPILER, "msvc2026_arm64")
+        self.assertNotEqual(self.config[TARGET]["General/ABI"], TARGET)
 
     def test_uses_active_python_not_x64_path(self):
         self.assertEqual(self.config[TARGET]["Paths/Python"], PYTHON_DIRECTORY)
