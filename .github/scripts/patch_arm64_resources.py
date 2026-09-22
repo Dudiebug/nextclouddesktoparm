@@ -16,7 +16,9 @@ PACKAGE = '''class Package(AutoToolsPackageBase):
         if CraftCore.compiler.isWindows and CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:
             import sys
             python = self.shell.toNativePath(sys.executable)
-            wrapper = self.shell.toNativePath(self.blueprintDir() / "arm64_windres.py")
+            wrapper = self.shell.toNativePath(
+                CraftCore.standardDirs.craftRoot() / "craft" / "bin" / "arm64_windres.py"
+            )
             compiler = f'"{python}" "{wrapper}"'
             # Configure libtool consistently, and propagate to recursive make.
             for settings in (self.subinfo.options.configure, self.subinfo.options.make):
@@ -36,14 +38,28 @@ def patch(source: str) -> str:
     return result
 
 
+def apply(craft_clone: Path, helper_source: Path) -> None:
+    directory = craft_clone / "blueprints/libs/libunistring"
+    blueprint = directory / "libunistring.py"
+    result = patch(blueprint.read_text(encoding="utf-8"))
+
+    helper_destination = craft_clone / "bin" / "arm64_windres.py"
+    helper_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(helper_source, helper_destination)
+
+    # Craft treats Python files inside blueprint package directories as recipe
+    # candidates. Keep the helper in craft/bin so blueprint discovery cannot
+    # mistake it for a second libunistring recipe.
+    stale_helper = directory / "arm64_windres.py"
+    stale_helper.unlink(missing_ok=True)
+
+    blueprint.write_text(result, encoding="utf-8", newline="\n")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Usage: patch_arm64_resources.py <craft-clone>")
-    directory = Path(sys.argv[1]) / "blueprints/libs/libunistring"
-    blueprint = directory / "libunistring.py"
-    result = patch(blueprint.read_text(encoding="utf-8"))
-    shutil.copyfile(Path(__file__).with_name("arm64_windres.py"), directory / "arm64_windres.py")
-    blueprint.write_text(result, encoding="utf-8", newline="\n")
+    apply(Path(sys.argv[1]), Path(__file__).with_name("arm64_windres.py"))
     print("Patched libunistring: explicit RC/WINDRES using rc.exe and ARM64 cvtres.exe")
 
 
