@@ -3,6 +3,9 @@
 name: Track upstream stable releases
 
 on:
+  push:
+    branches: ['master']
+    paths: ['.github/workflows/upstream-release-watch.yml']
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -90,7 +93,7 @@ jobs:
 
           git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
           git fetch upstream "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
-          git fetch origin arm64-tooling
+          git fetch origin '+refs/heads/arm64-tooling:refs/remotes/origin/arm64-tooling'
 
           upstream_commit="$(git rev-list -n 1 "$UPSTREAM_TAG")"
           test -n "$upstream_commit"
