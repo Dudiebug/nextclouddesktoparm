@@ -7,35 +7,23 @@ from pathlib import Path
 import sys
 
 
-OLD = '''    def getMsvcPlatformToolset(self):
-        versions = {
-            CraftCompiler.Abi.msvc2019: 142,
-            CraftCompiler.Abi.msvc2022: 143,
-            CraftCompiler.Abi.msvc2026: 145,
-        }
-'''
-
-NEW = '''    def getMsvcPlatformToolset(self):
-        # VS 2026 hosted runners also carry the 14.44 ARM64 toolset. When an
+SIGNATURE = "    def getMsvcPlatformToolset(self):\n"
+MARKER = 'self.msvcToolset.startswith("14.44")'
+INSERT = '''        # VS 2026 hosted runners also carry the 14.44 ARM64 toolset. When an
         # explicit 14.44 compiler is selected through vcvarsall, use the
         # matching MSBuild PlatformToolset instead of forcing the ABI default
         # back to v145.
         if self.msvcToolset and self.msvcToolset.startswith("14.44"):
             return 143
-        versions = {
-            CraftCompiler.Abi.msvc2019: 142,
-            CraftCompiler.Abi.msvc2022: 143,
-            CraftCompiler.Abi.msvc2026: 145,
-        }
 '''
 
 
 def patch(source: str) -> str:
-    if NEW in source:
+    if MARKER in source:
         return source
-    if OLD not in source:
+    if source.count(SIGNATURE) != 1:
         raise ValueError("CraftCompiler.getMsvcPlatformToolset changed upstream")
-    return source.replace(OLD, NEW, 1)
+    return source.replace(SIGNATURE, SIGNATURE + INSERT, 1)
 
 
 def main() -> None:

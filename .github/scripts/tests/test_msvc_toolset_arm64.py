@@ -19,6 +19,7 @@ SOURCE = '''class CraftCompiler:
         versions = {
             CraftCompiler.Abi.msvc2019: 142,
             CraftCompiler.Abi.msvc2022: 143,
+            # Microsoft skipped v144, see https://stackoverflow.com/a/72951716
             CraftCompiler.Abi.msvc2026: 145,
         }
         if self.signature.abi not in versions:
@@ -36,6 +37,10 @@ class MsvcToolsetPatchTests(unittest.TestCase):
             result.index('self.msvcToolset.startswith("14.44")'),
             result.index('CraftCompiler.Abi.msvc2026: 145'),
         )
+
+    def test_real_upstream_comment_does_not_break_patch(self):
+        result = patch(SOURCE)
+        self.assertIn('# Microsoft skipped v144', result)
 
     def test_default_msvc2026_mapping_is_preserved(self):
         result = patch(SOURCE)
