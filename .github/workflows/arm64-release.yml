@@ -125,7 +125,10 @@ jobs:
           }
           craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|${{ steps.version.outputs.kde_ref }}|"
           craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-nextcloud.git|${{ steps.version.outputs.nextcloud_ref }}|"
-          craft craft
+          # CraftMaster has already materialized the configured Craft revision while
+          # adding the blueprint repositories. Building the entire `craft` meta-package
+          # here consumed about 2h37 on native ARM64 before dependency installation and
+          # pushed the GitHub-hosted job into its six-hour execution cap.
           $clone = Join-Path $env:GITHUB_WORKSPACE 'craft-clone'
           $locations = Join-Path $env:GITHUB_WORKSPACE "$env:CRAFT_TARGET/etc/blueprints/locations"
           $nextcloud = Join-Path $locations 'craft-blueprints-nextcloud'
