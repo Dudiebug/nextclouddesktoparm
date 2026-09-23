@@ -16,6 +16,7 @@ import sys
 TARGET = "windows-msvc2022_arm64-cl"
 COMPILER_ABI = "windows-msvc2026_arm64-cl"
 QT_COMPILER = "msvc2026_arm64"
+MSVC_TOOLSET = "14.44"
 
 
 def configure(source: str, revision: str, python_directory: str) -> str:
@@ -36,6 +37,7 @@ def configure(source: str, revision: str, python_directory: str) -> str:
         "Packager/PackageType": "NullsoftInstallerPackager",
         "QtSDK/Compiler": QT_COMPILER,
         "General/ABI": COMPILER_ABI,
+        "General/MSVCToolset": MSVC_TOOLSET,
         "Paths/Python": python_directory,
         "ShortPath/DriveLetter": "Q:",
         "Packager/UseCache": "False",
