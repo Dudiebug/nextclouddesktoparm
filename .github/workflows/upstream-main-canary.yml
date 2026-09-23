@@ -75,4 +75,4 @@ jobs:
           git push origin "HEAD:refs/heads/${canary_branch}" --force
 
           # Stable canary uses the full ARM64 build but never publishes a release.
-          gh workflow run arm64-release.yml --ref "$canary_branch"
+          gh workflow run arm64-release.yml --repo "$GITHUB_REPOSITORY" --ref "$canary_branch"
