@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Run even when upstream main has not changed'
+        description: 'Run even when upstream stable source and ARM64 tooling have not changed'
         required: false
         default: false
         type: boolean
@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Refresh canary when active upstream stable branch changes
+      - name: Refresh canary when upstream stable source or ARM64 tooling changes
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
@@ -56,19 +56,24 @@ jobs:
           git fetch origin "+refs/heads/${canary_branch}:refs/remotes/origin/${canary_branch}" 2>/dev/null || true
 
           upstream_sha="$(git rev-parse "upstream/${stable_branch}")"
-          marker=".github/upstream-stable-sha"
-          previous_sha="$(git show "origin/${canary_branch}:${marker}" 2>/dev/null || true)"
-          previous_sha="$(printf '%s' "$previous_sha" | tr -d '\r\n')"
+          tooling_sha="$(git rev-parse origin/arm64-tooling)"
+          upstream_marker=".github/upstream-stable-sha"
+          tooling_marker=".github/arm64-tooling-sha"
+          previous_upstream_sha="$(git show "origin/${canary_branch}:${upstream_marker}" 2>/dev/null || true)"
+          previous_tooling_sha="$(git show "origin/${canary_branch}:${tooling_marker}" 2>/dev/null || true)"
+          previous_upstream_sha="$(printf '%s' "$previous_upstream_sha" | tr -d '\r\n')"
+          previous_tooling_sha="$(printf '%s' "$previous_tooling_sha" | tr -d '\r\n')"
 
-          if [[ "$upstream_sha" == "$previous_sha" && "${FORCE:-false}" != "true" ]]; then
-            echo "Upstream ${stable_branch} has not changed: $upstream_sha"
+          if [[ "$upstream_sha" == "$previous_upstream_sha" && "$tooling_sha" == "$previous_tooling_sha" && "${FORCE:-false}" != "true" ]]; then
+            echo "No canary inputs changed: upstream=$upstream_sha tooling=$tooling_sha"
             exit 0
           fi
 
           git checkout -B "$canary_branch" "$upstream_sha"
           git checkout origin/arm64-tooling -- .github/scripts .github/workflows/arm64-release.yml
           mkdir -p .github
-          printf '%s\n' "$upstream_sha" > "$marker"
+          printf '%s\n' "$upstream_sha" > "$upstream_marker"
+          printf '%s\n' "$tooling_sha" > "$tooling_marker"
 
           git add .github
           git commit -m "ci: test ARM64 overlay against ${stable_branch} ${upstream_sha:0:12}"
