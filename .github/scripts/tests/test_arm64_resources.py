@@ -9,7 +9,7 @@ from unittest.mock import patch as mock_patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from arm64_windres import Options, compile_resource, parse_arguments, windows_path
-from patch_arm64_resources import apply, patch
+from patch_arm64_resources import apply, patch, patch_gettext
 
 
 class ResourceTests(unittest.TestCase):
@@ -25,6 +25,20 @@ class ResourceTests(unittest.TestCase):
         self.assertIn('PACKAGE_VERSION_STRING="1.4.1"', options.defines)
         self.assertIn('RC_INVOKED', options.defines)
         self.assertEqual(options.output, '.libs/libunistring.res.obj')
+
+    def test_actual_gettext_flags(self):
+        args = ['--target=pe-x86-64', '--preprocessor=cl', '--preprocessor-arg=-nologo',
+                '--preprocessor-arg=-EP', '--preprocessor-arg=-DRC_INVOKED',
+                '--preprocessor-arg=-DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP',
+                '-O', 'COFF', r'-DPACKAGE_VERSION_STRING=\"0.22.3\"',
+                '-DPACKAGE_VERSION_MAJOR=0', '-DPACKAGE_VERSION_MINOR=22',
+                '-DPACKAGE_VERSION_SUBMINOR=3', '-i', './libintl.rc',
+                '--output-format=coff', '-o', '.libs/libintl.res.obj']
+        options = parse_arguments(args)
+        self.assertEqual(options.source, './libintl.rc')
+        self.assertIn('PACKAGE_VERSION_STRING="0.22.3"', options.defines)
+        self.assertIn('RC_INVOKED', options.defines)
+        self.assertEqual(options.output, '.libs/libintl.res.obj')
 
     def test_short_and_long_forms(self):
         options = parse_arguments(['--input=a.rc', '-ob.obj', '--define=V=1', '-I', '/d/inc'])
@@ -52,18 +66,54 @@ class ResourceTests(unittest.TestCase):
         self.assertIn('self.subinfo.options.make', result)
         self.assertIn('WINDRES={compiler}', result)
 
+    def test_gettext_patch_is_idempotent_and_preserves_recipe(self):
+        source = (
+            'import info\nfrom CraftCore import CraftCore\n'
+            'class Package(AutoToolsPackageBase):\n'
+            '    def __init__(self, **kwargs):\n'
+            '        super().__init__(**kwargs)\n'
+            '        self.shell.useMSVCCompatEnv = True\n'
+            '        self.subinfo.options.configure.args += ["--enable-nls"]\n'
+            '    def configure(self):\n'
+            '        return super().configure()\n'
+        )
+        result = patch_gettext(source)
+        self.assertEqual(patch_gettext(result), result)
+        self.assertIn('--enable-nls', result)
+        self.assertIn('def configure(self):', result)
+        self.assertIn('self.subinfo.options.make', result)
+        self.assertIn('WINDRES={compiler}', result)
+
     def test_unexpected_blueprint_rejected(self):
         with self.assertRaises(ValueError):
             patch('class Package(CMakePackageBase):\n    pass\n')
 
+    def test_unexpected_gettext_blueprint_rejected(self):
+        with self.assertRaises(ValueError):
+            patch_gettext('class Package(AutoToolsPackageBase):\n    def __init__(self):\n        pass\n')
+
     def test_helper_is_kept_outside_blueprint_recipe_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             craft = Path(directory) / "craft-clone"
-            blueprint_dir = craft / "blueprints/libs/libunistring"
-            blueprint_dir.mkdir(parents=True)
-            blueprint = blueprint_dir / "libunistring.py"
-            blueprint.write_text(
+            libunistring_dir = craft / "blueprints/libs/libunistring"
+            libunistring_dir.mkdir(parents=True)
+            libunistring = libunistring_dir / "libunistring.py"
+            libunistring.write_text(
                 "import info\nclass Package(AutoToolsPackageBase):\n    pass\n",
+                encoding="utf-8",
+            )
+            gettext_dir = craft / "blueprints/libs/gettext"
+            gettext_dir.mkdir(parents=True)
+            gettext = gettext_dir / "gettext.py"
+            gettext.write_text(
+                "from CraftCore import CraftCore\n"
+                "class Package(AutoToolsPackageBase):\n"
+                "    def __init__(self, **kwargs):\n"
+                "        super().__init__(**kwargs)\n"
+                "        self.shell.useMSVCCompatEnv = True\n"
+                "        self.subinfo.options.configure.args += ['--enable-nls']\n"
+                "    def configure(self):\n"
+                "        return super().configure()\n",
                 encoding="utf-8",
             )
             helper = Path(directory) / "arm64_windres.py"
@@ -72,10 +122,15 @@ class ResourceTests(unittest.TestCase):
             apply(craft, helper)
 
             self.assertTrue((craft / "bin/arm64_windres.py").is_file())
-            self.assertFalse((blueprint_dir / "arm64_windres.py").exists())
-            patched = blueprint.read_text(encoding="utf-8")
+            self.assertFalse((libunistring_dir / "arm64_windres.py").exists())
+            self.assertFalse((gettext_dir / "arm64_windres.py").exists())
+            patched = libunistring.read_text(encoding="utf-8")
             self.assertIn('CraftCore.standardDirs.craftRoot()', patched)
             self.assertIn('"craft" / "bin" / "arm64_windres.py"', patched)
+            gettext_patched = gettext.read_text(encoding="utf-8")
+            self.assertIn("--enable-nls", gettext_patched)
+            self.assertIn("def configure(self):", gettext_patched)
+            self.assertIn('WINDRES={compiler}', gettext_patched)
 
     def test_native_sdk_command_and_machine_check(self):
         with tempfile.TemporaryDirectory() as directory:
