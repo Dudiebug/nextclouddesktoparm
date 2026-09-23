@@ -7,9 +7,22 @@
 import sys
 
 
-def patch_libjpeg(path):
+def _read_normalized(path):
     with open(path, "r", encoding="utf-8", newline="") as f:
-        s = f.read()
+        source = f.read()
+    line_ending = "\r\n" if "\r\n" in source else "\n"
+    return source.replace("\r\n", "\n"), line_ending
+
+
+def _write_preserving_line_endings(path, source, line_ending):
+    if line_ending == "\r\n":
+        source = source.replace("\n", "\r\n")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(source)
+
+
+def patch_libjpeg(path):
+    s, line_ending = _read_normalized(path)
 
     if "-DWITH_SIMD=OFF" in s:
         print(f"SKIP {path}: ARM64 SIMD patch already present")
@@ -33,14 +46,12 @@ def patch_libjpeg(path):
         raise RuntimeError("libjpeg-turbo Package block changed upstream")
     s = s.replace(needle, replacement, 1)
 
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(s)
+    _write_preserving_line_endings(path, s, line_ending)
     print(f"Patched {path}: disabled x86 SIMD for Windows ARM64")
 
 
 def patch_pixman(path):
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        s = f.read()
+    s, line_ending = _read_normalized(path)
 
     if "-Dmmx=disabled" in s and "-Dsse2=disabled" in s and "-Dssse3=disabled" in s:
         print(f"SKIP {path}: Windows ARM64 SIMD patch already present")
@@ -65,8 +76,7 @@ def patch_pixman(path):
         raise RuntimeError("pixman Package block changed upstream")
     s = s.replace(needle, replacement, 1)
 
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(s)
+    _write_preserving_line_endings(path, s, line_ending)
     print(f"Patched {path}: disabled unsupported SIMD paths for Windows ARM64")
 
 
