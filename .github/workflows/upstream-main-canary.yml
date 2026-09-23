@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Dudiebug
 # SPDX-License-Identifier: GPL-2.0-or-later
-name: Test ARM64 overlay against upstream main
+name: Test ARM64 overlay against upstream stable
 
 on:
   push:
@@ -21,18 +21,18 @@ permissions:
   actions: write
 
 concurrency:
-  group: upstream-main-arm64-canary
+  group: upstream-stable-arm64-canary
   cancel-in-progress: true
 
 jobs:
-  refresh-canary:
+  refresh-stable-canary:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      - name: Refresh canary only when upstream main changes
+      - name: Refresh canary when active upstream stable branch changes
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
@@ -42,28 +42,37 @@ jobs:
           git config user.name 'ARM64 Canary Bot'
           git config user.email 'actions@users.noreply.github.com'
 
-          git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
-          git fetch upstream '+refs/heads/master:refs/remotes/upstream/master'
-          git fetch origin '+refs/heads/arm64-tooling:refs/remotes/origin/arm64-tooling'
-          git fetch origin '+refs/heads/canary/upstream-main:refs/remotes/origin/canary/upstream-main' 2>/dev/null || true
+          latest_tag="$(gh api repos/nextcloud/desktop/releases/latest --jq '.tag_name')"
+          if [[ ! "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "::error::Unexpected latest stable tag: $latest_tag"
+            exit 1
+          fi
+          stable_branch="stable-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          canary_branch="canary/${stable_branch}"
 
-          upstream_sha="$(git rev-parse upstream/master)"
-          previous_sha="$(git show origin/canary/upstream-main:.github/upstream-main-sha 2>/dev/null || true)"
+          git remote add upstream https://github.com/nextcloud/desktop.git 2>/dev/null || true
+          git fetch upstream "+refs/heads/${stable_branch}:refs/remotes/upstream/${stable_branch}"
+          git fetch origin '+refs/heads/arm64-tooling:refs/remotes/origin/arm64-tooling'
+          git fetch origin "+refs/heads/${canary_branch}:refs/remotes/origin/${canary_branch}" 2>/dev/null || true
+
+          upstream_sha="$(git rev-parse "upstream/${stable_branch}")"
+          marker=".github/upstream-stable-sha"
+          previous_sha="$(git show "origin/${canary_branch}:${marker}" 2>/dev/null || true)"
           previous_sha="$(printf '%s' "$previous_sha" | tr -d '\r\n')"
 
           if [[ "$upstream_sha" == "$previous_sha" && "${FORCE:-false}" != "true" ]]; then
-            echo "Upstream main has not changed: $upstream_sha"
+            echo "Upstream ${stable_branch} has not changed: $upstream_sha"
             exit 0
           fi
 
-          git checkout -B canary/upstream-main "$upstream_sha"
+          git checkout -B "$canary_branch" "$upstream_sha"
           git checkout origin/arm64-tooling -- .github/scripts .github/workflows/arm64-release.yml
           mkdir -p .github
-          printf '%s\n' "$upstream_sha" > .github/upstream-main-sha
+          printf '%s\n' "$upstream_sha" > "$marker"
 
           git add .github
-          git commit -m "ci: test ARM64 overlay against upstream main ${upstream_sha:0:12}"
-          git push origin HEAD:refs/heads/canary/upstream-main --force
+          git commit -m "ci: test ARM64 overlay against ${stable_branch} ${upstream_sha:0:12}"
+          git push origin "HEAD:refs/heads/${canary_branch}" --force
 
-          # Canary uses the same full ARM64 build but its release step is disabled.
-          gh workflow run arm64-release.yml --ref canary/upstream-main
+          # Stable canary uses the full ARM64 build but never publishes a release.
+          gh workflow run arm64-release.yml --ref "$canary_branch"
