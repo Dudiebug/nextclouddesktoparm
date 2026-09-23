@@ -23,6 +23,8 @@ craft/craft-blueprints-kde.revision = stable-34.0
 [windows-msvc2022_64-cl]
 General/ABI = windows-msvc2022_64-cl
 Paths/Python = C:\\Python312-x64
+[Env]
+SIGN_PACKAGE = False
 """
 REVISION = "a" * 40
 PYTHON_DIRECTORY = r"C:\hostedtoolcache\windows\Python\3.12.10\arm64"
@@ -66,6 +68,10 @@ class Arm64ConfigTests(unittest.TestCase):
     def test_tests_enabled_and_webengine_disabled(self):
         self.assertEqual(self.config["BlueprintSettings"]["nextcloud-client.buildTests"], "True")
         self.assertEqual(self.config["BlueprintSettings"]["nextcloud-client.buildWithWebEngine"], "False")
+
+    def test_pip_uses_legacy_certs_without_overwriting_upstream_env(self):
+        self.assertEqual(self.config["Env"]["PIP_USE_DEPRECATED"], "legacy-certs")
+        self.assertEqual(self.config["Env"]["SIGN_PACKAGE"], "False")
 
     def test_second_configuration_is_idempotent(self):
         self.assertEqual(configure(self.generated, REVISION, PYTHON_DIRECTORY), self.generated)

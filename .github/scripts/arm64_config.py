@@ -45,6 +45,14 @@ def configure(source: str, revision: str, python_directory: str) -> str:
         config.add_section("BlueprintSettings")
     config["BlueprintSettings"]["nextcloud-client.buildTests"] = "True"
     config["BlueprintSettings"]["nextcloud-client.buildWithWebEngine"] = "False"
+    if not config.has_section("Env"):
+        config.add_section("Env")
+    # pip 24.2+ reads the Windows certificate store through truststore by
+    # default. The hosted Windows ARM64 image exposes a malformed certificate
+    # that CPython rejects before pip can fall back to its bundled CA store.
+    # Keep TLS verification enabled while opting this generated ARM64 build out
+    # of the system certificate store.
+    config["Env"]["PIP_USE_DEPRECATED"] = "legacy-certs"
     output = io.StringIO()
     config.write(output)
     return output.getvalue()
