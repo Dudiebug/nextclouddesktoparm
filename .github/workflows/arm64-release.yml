@@ -26,7 +26,7 @@ jobs:
       CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
       CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster-arm64.ini
       PIP_USE_DEPRECATED: legacy-certs
-      ARM64_CACHE_FINGERPRINT: ${{ hashFiles('craftmaster.ini', '.github/scripts/**', '.github/workflows/arm64-release.yml') }}
+      ARM64_CACHE_FINGERPRINT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
