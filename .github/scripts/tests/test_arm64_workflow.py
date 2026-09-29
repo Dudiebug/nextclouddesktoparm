@@ -42,6 +42,29 @@ class Arm64WorkflowTests(unittest.TestCase):
         ):
             self.assertIn(package, text)
 
+    def test_zlib_is_bootstrapped_before_virtual_base_resolves_python(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        step = re.search(
+            r"(?ms)^      - name: Build dependency checkpoint 01 - foundation\n(?P<body>.*?)(?=^      - name: )",
+            text,
+        )
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        bootstrap = body.index("virtual/base.ignored=True")
+        tools = re.search(r"foreach \(\$package in @\((?P<list>[^)]*)\)\) \{\s*\n\s*Write-Host \"Bootstrapping", body)
+        self.assertIsNotNone(tools)
+        packages = re.findall(r"'([^']+)'", tools.group("list"))
+        self.assertEqual(packages[-1], "libs/zlib")
+        for tool in ("dev-utils/cmake", "dev-utils/ninja", "dev-utils/patch"):
+            self.assertIn(tool, packages)
+        verify = body.index("Join-Path $root 'lib/zlib.lib'")
+        resume = body.index("foreach ($package in @('libs/zlib', 'libs/openssl'))")
+        self.assertLess(bootstrap, verify)
+        self.assertLess(verify, resume)
+        self.assertIn("@bootstrap $package", body)
+        # The normal resolution must not carry the virtual/base override.
+        self.assertNotIn("bootstrap", body[resume:])
+
 
 if __name__ == "__main__":
     unittest.main()
