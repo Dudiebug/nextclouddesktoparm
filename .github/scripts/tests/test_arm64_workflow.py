@@ -65,6 +65,22 @@ class Arm64WorkflowTests(unittest.TestCase):
         # The normal resolution must not carry the virtual/base override.
         self.assertNotIn("bootstrap", body[resume:])
 
+    def test_blueprint_fixes_reach_restored_workspaces(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        reuse = text.index('Write-Host "Reusing restored ARM64 Craft dependency workspace."')
+        patch = text.index("patch-kde-blueprints-arm64.py")
+        self.assertLess(reuse, patch)
+        self.assertIn('"$nextcloud/libs/libp11/libp11.py"', text)
+
+    def test_cross_commit_checkpoint_fallback_is_limited_to_stable_branches(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        restore = re.search(r"(?ms)restore-keys: \|\n(?P<keys>(?:^            .*\n)+)", text)
+        self.assertIsNotNone(restore)
+        keys = restore.group("keys").splitlines()
+        self.assertEqual(keys[0].strip(), "arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-")
+        self.assertIn("startsWith(github.ref, 'refs/heads/arm64/stable-') && 'arm64-deps-'", keys[1])
+        self.assertIn("format('arm64-deps-{0}-phase-', env.ARM64_CACHE_FINGERPRINT)", keys[1])
+
 
 if __name__ == "__main__":
     unittest.main()
