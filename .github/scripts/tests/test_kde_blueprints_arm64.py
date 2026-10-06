@@ -48,6 +48,25 @@ LIBP11 = (
 )
 
 
+QTTOOLS = (
+    "import info\n"
+    "from Blueprints.CraftPackageObject import CraftPackageObject\n"
+    "from CraftCore import CraftCore\n\n\n"
+    "class subinfo(info.infoclass):\n"
+    "    def setDependencies(self):\n"
+    "        self.runtimeDependencies[\"virtual/base\"] = None\n"
+    "        self.runtimeDependencies[\"libs/qt6/qtbase\"] = None\n"
+    "        self.runtimeDependencies[\"libs/qt6/qtdeclarative\"] = None\n"
+    "        self.runtimeDependencies[\"libs/llvm\"] = None\n"
+    "        self.patchLevel[\"6.4.0\"] = 1\n\n\n"
+    "class Package(CraftPackageObject.get(\"libs/qt6\").pattern):\n"
+    "    def __init__(self, **kwargs):\n"
+    "        super().__init__(**kwargs)\n"
+    "        if CraftCore.compiler.isMSVC() and self.buildType() == \"Debug\":\n"
+    "            self.subinfo.options.configure.args += [\"-DQT_FEATURE_clangcpp=OFF\", \"-DQT_FEATURE_clang=OFF\"]\n"
+)
+
+
 class KdeBlueprintPatchTests(unittest.TestCase):
     @staticmethod
     def _write(path, source, newline):
@@ -106,6 +125,31 @@ class KdeBlueprintPatchTests(unittest.TestCase):
             self._write(path, "class PackageMake:\n    pass\n", "\n")
             with self.assertRaises(RuntimeError):
                 module.patch_libp11(path)
+
+    def test_qttools_drops_llvm_only_for_windows_arm64(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qttools.py"
+            self._write(path, QTTOOLS, "\r\n")
+            module.patch_qttools(path)
+            module.patch_qttools(path)
+            text = path.read_bytes().decode("utf-8")
+            self.assertNotIn("\n", text.replace("\r\n", ""))
+            text = text.replace("\r\n", "\n")
+            compile(text, str(path), "exec")
+            self.assertEqual(text.count('self.runtimeDependencies["libs/llvm"] = None'), 1)
+            self.assertIn(
+                "        if not (CraftCore.compiler.isWindows and CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64):\n"
+                '            self.runtimeDependencies["libs/llvm"] = None\n',
+                text,
+            )
+            self.assertEqual(text.count('"-DFEATURE_clang=OFF", "-DFEATURE_clangcpp=OFF"'), 1)
+
+    def test_qttools_unexpected_upstream_layout_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qttools.py"
+            self._write(path, QTTOOLS.replace('libs/llvm', 'libs/clang'), "\n")
+            with self.assertRaises(RuntimeError):
+                module.patch_qttools(path)
 
 
 if __name__ == "__main__":

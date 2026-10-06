@@ -71,6 +71,7 @@ class Arm64WorkflowTests(unittest.TestCase):
         patch = text.index("patch-kde-blueprints-arm64.py")
         self.assertLess(reuse, patch)
         self.assertIn('"$nextcloud/libs/libp11/libp11.py"', text)
+        self.assertIn('"$kde/libs/qt6/qttools/qttools.py"', text)
 
     def test_cross_commit_checkpoint_fallback_is_limited_to_stable_branches(self):
         text = WORKFLOW.read_text(encoding="utf-8")
