@@ -56,6 +56,19 @@ class DownloadRetryPatchTests(unittest.TestCase):
             ("https://ftpmirror.gnu.org/libunistring/libunistring-1.4.1.tar.xz", "libunistring-1.4.1.tar.xz"),
         )
 
+    def test_gnu_pub_prefix_also_falls_back_to_mirrors(self):
+        url = "https://ftp.gnu.org/pub/gnu/gettext/gettext-0.22.3.tar.gz"
+        module, calls = load(patch(SOURCE), [False, False, True])
+        self.assertTrue(module["getFile"](url, "dl", "gettext-0.22.3.tar.gz"))
+        self.assertEqual(
+            [c[0] for c in calls],
+            [
+                url,
+                "https://ftpmirror.gnu.org/gettext/gettext-0.22.3.tar.gz",
+                "https://mirrors.kernel.org/gnu/gettext/gettext-0.22.3.tar.gz",
+            ],
+        )
+
     def test_non_gnu_download_is_retried_after_backoff(self):
         url = "https://github.com/OpenSC/libp11/releases/download/libp11-0.4.17/libp11-0.4.17.tar.gz"
         with mock.patch("time.sleep") as sleep:

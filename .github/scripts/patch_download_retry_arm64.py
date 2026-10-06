@@ -21,7 +21,10 @@ MARKER = "def _getFileOnce("
 WRAPPER = '''
 
 # Windows ARM64 build: retry transient download failures and use GNU mirrors.
-_GNU_PRIMARY = ("https://ftp.gnu.org/gnu/", "http://ftp.gnu.org/gnu/")
+_GNU_PRIMARY = (
+    "https://ftp.gnu.org/gnu/", "http://ftp.gnu.org/gnu/",
+    "https://ftp.gnu.org/pub/gnu/", "http://ftp.gnu.org/pub/gnu/",
+)
 _GNU_MIRRORS = ("https://ftpmirror.gnu.org/", "https://mirrors.kernel.org/gnu/")
 _DOWNLOAD_ROUNDS = 3
 
