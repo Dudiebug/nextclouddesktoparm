@@ -48,6 +48,16 @@ LIBP11 = (
 )
 
 
+LIBP11_RULES = (
+    "!IF \"$(BUILD_FOR)\" == \"WIN64\"\n"
+    "MACHINE = /MACHINE:X64\n"
+    "!ELSE\n"
+    "MACHINE = /MACHINE:X86\n"
+    "!ENDIF\n"
+    "LINKFLAGS = /NOLOGO /INCREMENTAL:NO $(MACHINE) /MANIFEST:NO\n"
+)
+
+
 QTTOOLS = (
     "import info\n"
     "from Blueprints.CraftPackageObject import CraftPackageObject\n"
@@ -106,6 +116,39 @@ class KdeBlueprintPatchTests(unittest.TestCase):
             self.assertNotIn(b"\r\n", libjpeg.read_bytes())
             self.assertNotIn(b"\r\n", pixman.read_bytes())
 
+    @staticmethod
+    def _load_libp11_package(text, architecture, base_make_result=True):
+        """Execute a patched libp11 blueprint against minimal Craft stubs."""
+        import os
+        import types
+
+        arch = types.SimpleNamespace(x86_64="x86_64", arm64="arm64")
+        errors = []
+        compiler = types.SimpleNamespace(architecture=architecture)
+        craft_core = types.SimpleNamespace(
+            compiler=compiler,
+            log=types.SimpleNamespace(error=errors.append),
+            standardDirs=types.SimpleNamespace(craftRoot=lambda: "C:/craft"),
+        )
+
+        class MakeFilePackageBase:
+            def __init__(self, **kwargs):
+                self.subinfo = types.SimpleNamespace(
+                    options=types.SimpleNamespace(make=types.SimpleNamespace(args=""))
+                )
+
+            def make(self):
+                return base_make_result
+
+        namespace = {
+            "os": os,
+            "CraftCore": craft_core,
+            "CraftCompiler": types.SimpleNamespace(Architecture=arch),
+            "MakeFilePackageBase": MakeFilePackageBase,
+        }
+        exec(text.replace("\r\n", "\n"), namespace)
+        return namespace["PackageMake"], errors
+
     def test_libp11_links_arm64_instead_of_x86(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "libp11.py"
@@ -113,11 +156,71 @@ class KdeBlueprintPatchTests(unittest.TestCase):
             module.patch_libp11(path)
             module.patch_libp11(path)
             text = path.read_bytes().decode("utf-8")
-            self.assertEqual(text.count("MACHINE=/MACHINE:ARM64"), 1)
-            self.assertIn("elif CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:", text)
+            self.assertEqual(text.count(module.LIBP11_MARKER), 1)
+            self.assertNotIn("MACHINE=/MACHINE:ARM64", text)
             self.assertIn("BUILD_FOR=WIN64", text)
             self.assertNotIn("\n", text.replace("\r\n", ""))
             compile(text.replace("\r\n", "\n"), str(path), "exec")
+
+    def test_libp11_upgrades_legacy_command_line_machine_patch(self):
+        legacy = LIBP11.replace(
+            "             self.subinfo.options.make.args += f\" BUILD_FOR=WIN64\"\n",
+            "             self.subinfo.options.make.args += f\" BUILD_FOR=WIN64\"\n"
+            + module.LIBP11_LEGACY_PATCH,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "libp11.py"
+            self._write(path, legacy, "\r\n")
+            module.patch_libp11(path)
+            text = path.read_bytes().decode("utf-8")
+            self.assertNotIn("MACHINE=/MACHINE:ARM64", text)
+            self.assertEqual(text.count(module.LIBP11_MARKER), 1)
+
+    def test_libp11_arm64_make_rewrites_rules_used_by_recursive_nmake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "libp11.py"
+            self._write(path, LIBP11, "\n")
+            module.patch_libp11(path)
+            source = Path(directory) / "src"
+            source.mkdir()
+            rules = source / "make.rules.mak"
+            rules.write_text(LIBP11_RULES)
+            package, errors = self._load_libp11_package(path.read_text(), "arm64")
+            instance = package()
+            instance.sourceDir = lambda: str(source)
+            self.assertTrue(instance.make())
+            self.assertTrue(instance.make())
+            content = rules.read_text()
+            self.assertIn("MACHINE = /MACHINE:X64", content)
+            self.assertIn("MACHINE = /MACHINE:ARM64", content)
+            self.assertNotIn("/MACHINE:X86", content)
+            self.assertEqual(errors, [])
+
+    def test_libp11_make_leaves_x64_rules_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "libp11.py"
+            self._write(path, LIBP11, "\n")
+            module.patch_libp11(path)
+            rules = Path(directory) / "make.rules.mak"
+            rules.write_text(LIBP11_RULES)
+            package, _ = self._load_libp11_package(path.read_text(), "x86_64")
+            instance = package()
+            instance.sourceDir = lambda: directory
+            self.assertTrue(instance.make())
+            self.assertEqual(rules.read_text(), LIBP11_RULES)
+            self.assertIn("BUILD_FOR=WIN64", instance.subinfo.options.make.args)
+
+    def test_libp11_arm64_make_fails_on_unexpected_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "libp11.py"
+            self._write(path, LIBP11, "\n")
+            module.patch_libp11(path)
+            (Path(directory) / "make.rules.mak").write_text("LINKFLAGS = /NOLOGO\n")
+            package, errors = self._load_libp11_package(path.read_text(), "arm64")
+            instance = package()
+            instance.sourceDir = lambda: directory
+            self.assertFalse(instance.make())
+            self.assertEqual(len(errors), 1)
 
     def test_libp11_unexpected_upstream_layout_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
