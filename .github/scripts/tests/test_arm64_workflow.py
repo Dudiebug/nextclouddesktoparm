@@ -32,7 +32,13 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertIn("Get-WinEvent", body)
         self.assertIn("craft-test-$name.log", body)
         # The diagnostics must never turn a failing CTest run into a pass.
-        self.assertRegex(body, r"(?s)if \(\$ctestCode -ne 0\) \{.*exit \$ctestCode\s*\n\s*\}")
+        self.assertRegex(body, r"(?m)^\s*if \(\$ctestCode -ne 0\) \{ exit \$ctestCode \}\s*$")
+        # Tests run in upstream's Windows CI environment (UTC clock, windowsvista
+        # style) and the runner's own time zone is restored afterwards.
+        self.assertLess(body.index("Set-TimeZone -Id 'UTC'"), body.index("& ctest"))
+        self.assertLess(body.index("$env:QT_STYLE_OVERRIDE = 'windowsvista'"), body.index("& ctest"))
+        self.assertIn("Set-TimeZone -Id $runnerTimeZone", body)
+        self.assertLess(body.index("Set-TimeZone -Id $runnerTimeZone"), body.index("{ exit $ctestCode }"))
         self.assertNotIn("continue-on-error", body)
 
     def test_dependency_build_is_resumable_across_six_hour_runner_windows(self):
