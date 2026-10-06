@@ -11,6 +11,14 @@ spec = spec_from_file_location("patch_kde_blueprints_arm64", SCRIPT)
 module = module_from_spec(spec)
 spec.loader.exec_module(module)
 
+
+def _load_nsis_module():
+    script = Path(__file__).resolve().parents[1] / "patch-nsis-and-blueprint.py"
+    nsis_spec = spec_from_file_location("patch_nsis_and_blueprint", script)
+    nsis_module = module_from_spec(nsis_spec)
+    nsis_spec.loader.exec_module(nsis_module)
+    return nsis_module
+
 LIBJPEG = (
     "import info\n"
     "from Package.CMakePackageBase import CMakePackageBase\n"
@@ -55,6 +63,25 @@ LIBP11_RULES = (
     "MACHINE = /MACHINE:X86\n"
     "!ENDIF\n"
     "LINKFLAGS = /NOLOGO /INCREMENTAL:NO $(MACHINE) /MANIFEST:NO\n"
+)
+
+
+NEXTCLOUD_CLIENT = (
+    "# SPDX-License-Identifier: BSD-2-Clause\n"
+    "# SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors\n"
+    "\n"
+    "import info\n"
+    "from Package.CMakePackageBase import *\n"
+    "\n"
+    "class Package(CMakePackageBase):\n"
+    "    def createPackage(self):\n"
+    "        self.blacklist_file.append(os.path.join(self.packageDir(), 'blacklist.txt'))\n"
+    "        self.defines[\"appname\"] = \"nextcloud\"\n"
+    "        self.defines[\"company\"] = \"Nextcloud GmbH\"\n"
+    "        self.applicationExecutable = \"nextcloud\"\n"
+    "\n"
+    "        self.ignoredPackages += [\"binary/mysql\"]\n"
+    "        return super().createPackage()\n"
 )
 
 
@@ -254,6 +281,65 @@ class KdeBlueprintPatchTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.patch_qttools(path)
 
+
+    @staticmethod
+    def _run_create_package(text, directory):
+        """Run createPackage() with Craft stubs; the star import provides no os."""
+
+        class CMakePackageBase:
+            def createPackage(self):
+                return True
+
+        source = text.replace("import info\n", "").replace("from Package.CMakePackageBase import *\n", "")
+        scope = {"__name__": "nextcloud_client_blueprint", "CMakePackageBase": CMakePackageBase}
+        exec(source, scope)
+        package = scope["Package"]()
+        package.blacklist_file = []
+        package.defines = {}
+        package.ignoredPackages = []
+        package.packageDir = lambda: directory
+        package.buildDir = lambda: directory
+        package.sourceDir = lambda: directory
+        return package, package.createPackage()
+
+    def test_nextcloud_client_create_package_has_os_after_both_patches(self):
+        nsis = _load_nsis_module()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nextcloud-client.py"
+            self._write(path, NEXTCLOUD_CLIENT, "\n")
+            with self.assertRaises(NameError):
+                self._run_create_package(path.read_text(), directory)
+            nsis.patch_blueprint(str(path))
+            module.patch_nextcloud_client_imports(path)
+            module.patch_nextcloud_client_imports(path)
+            text = path.read_text()
+            self.assertEqual(text.count("import os\n"), 1)
+            Path(directory, "VERSION.cmake").write_text(
+                "set( MIRALL_VERSION_MAJOR 34 )\nset( MIRALL_VERSION_MINOR 0 )\nset( MIRALL_VERSION_PATCH 5 )\n"
+            )
+            package, result = self._run_create_package(text, directory)
+            self.assertTrue(result)
+            self.assertEqual(package.defines["executable"], "bin\\nextcloud.exe")
+            self.assertEqual(package.defines["version"], "34.0.5")
+
+    def test_nextcloud_client_import_patch_reaches_previously_patched_crlf_blueprints(self):
+        nsis = _load_nsis_module()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nextcloud-client.py"
+            self._write(path, NEXTCLOUD_CLIENT, "\n")
+            nsis.patch_blueprint(str(path))
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            module.patch_nextcloud_client_imports(path)
+            data = path.read_bytes()
+            self.assertIn(b"import info\r\nimport os\r\n", data)
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+
+    def test_nextcloud_client_unexpected_imports_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nextcloud-client.py"
+            self._write(path, NEXTCLOUD_CLIENT.replace("import info\n", "from info import infoclass\n"), "\n")
+            with self.assertRaises(RuntimeError):
+                module.patch_nextcloud_client_imports(path)
 
 if __name__ == "__main__":
     unittest.main()

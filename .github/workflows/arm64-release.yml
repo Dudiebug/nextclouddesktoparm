@@ -165,7 +165,7 @@ jobs:
           # Blueprint fixes are idempotent and also applied to restored
           # workspaces, so a fix for a later checkpoint reaches blueprints
           # restored from an earlier checkpoint.
-          python '.github/scripts/patch-kde-blueprints-arm64.py' "$kde/libs/libjpeg-turbo/libjpeg-turbo.py" "$kde/libs/pixman/pixman.py" "$nextcloud/libs/libp11/libp11.py" "$kde/libs/qt6/qttools/qttools.py"
+          python '.github/scripts/patch-kde-blueprints-arm64.py' "$kde/libs/libjpeg-turbo/libjpeg-turbo.py" "$kde/libs/pixman/pixman.py" "$nextcloud/libs/libp11/libp11.py" "$kde/libs/qt6/qttools/qttools.py" "$nextcloud/nextcloud-client/nextcloud-client.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($name in @('craft-blueprints-kde', 'craft-blueprints-nextcloud')) {
             $directory = Join-Path $locations $name
@@ -444,6 +444,11 @@ jobs:
           $version = '${{ steps.version.outputs.version }}'
           $fileVersion = (Get-Item "$root/bin/nextcloud.exe").VersionInfo.FileVersion
           if ($fileVersion -notmatch ('^' + [regex]::Escape($version) + '(\D|$)')) { throw "Unexpected binary version: $fileVersion" }
+          # NullsoftInstallerPackager needs makensis >= 3.03 and stops with
+          # "Craft requires Nsis ... 'craft nsis'" when it is missing; nothing in
+          # the nextcloud-client dependency graph installs it.
+          & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c 'dev-utils/nsis'
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed: $LASTEXITCODE" }
           $log = Join-Path $env:RUNNER_TEMP 'craft-package.log'
           & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --src-dir $env:GITHUB_WORKSPACE --package nextcloud-client *> $log
           $code = $LASTEXITCODE
