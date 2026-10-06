@@ -80,24 +80,58 @@ def patch_pixman(path):
     print(f"Patched {path}: disabled unsupported SIMD paths for Windows ARM64")
 
 
+LIBP11_MARKER = "# Windows ARM64: libp11 make.rules.mak machine"
+
+# Earlier tooling passed MACHINE on the nmake command line. libp11's top-level
+# Makefile.mak re-invokes nmake in src/ without forwarding it, so the child only
+# sees it as an inherited macro, which make.rules.mak's unconditional
+# "MACHINE = /MACHINE:X86" overrides (run 37476929089). Restored dependency
+# workspaces may still carry that blueprint edit, so remove it on upgrade.
+LIBP11_LEGACY_PATCH = (
+    '        elif CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
+    '             self.subinfo.options.make.args += " MACHINE=/MACHINE:ARM64"\n'
+)
+
+
 def patch_libp11(path):
     s, line_ending = _read_normalized(path)
 
-    if "/MACHINE:ARM64" in s:
+    if LIBP11_MARKER in s:
         print(f"SKIP {path}: Windows ARM64 linker machine patch already present")
         return
 
-    # libp11's make.rules.mak links with /MACHINE:X86 unless BUILD_FOR=WIN64.
-    # An nmake command-line macro overrides the makefile's MACHINE definition.
+    s = s.replace(LIBP11_LEGACY_PATCH, "", 1)
+
+    # make.rules.mak only knows x64 (BUILD_FOR=WIN64) and otherwise hardcodes
+    # /MACHINE:X86. Rewrite that default in the unpacked sources before nmake
+    # runs, so every recursive nmake and every DLL link uses /MACHINE:ARM64.
     needle = (
         '        if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64:\n'
         '             self.subinfo.options.make.args += f" BUILD_FOR=WIN64"\n'
+        '\n'
+        '    def install(self):\n'
     )
-    replacement = needle + (
-        '        elif CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
-        '             self.subinfo.options.make.args += " MACHINE=/MACHINE:ARM64"\n'
+    replacement = (
+        '        if CraftCore.compiler.architecture == CraftCompiler.Architecture.x86_64:\n'
+        '             self.subinfo.options.make.args += f" BUILD_FOR=WIN64"\n'
+        '\n'
+        '    def make(self):\n'
+        f'        {LIBP11_MARKER}\n'
+        '        if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
+        '            rules = os.path.join(self.sourceDir(), "make.rules.mak")\n'
+        '            with open(rules, "rt") as f:\n'
+        '                content = f.read()\n'
+        '            if "MACHINE = /MACHINE:ARM64" not in content:\n'
+        '                if content.count("MACHINE = /MACHINE:X86") != 1:\n'
+        '                    CraftCore.log.error(f"Unexpected libp11 machine settings in {rules}")\n'
+        '                    return False\n'
+        '                with open(rules, "wt") as f:\n'
+        '                    f.write(content.replace("MACHINE = /MACHINE:X86", "MACHINE = /MACHINE:ARM64"))\n'
+        '        return super().make()\n'
+        '\n'
+        '    def install(self):\n'
     )
-    if needle not in s:
+    if s.count(needle) != 1:
         raise RuntimeError("libp11 nmake architecture block changed upstream")
     s = s.replace(needle, replacement, 1)
 
