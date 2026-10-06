@@ -21,6 +21,20 @@ class Arm64WorkflowTests(unittest.TestCase):
             r"(?m)^      PIP_USE_DEPRECATED:\s*legacy-certs\s*$",
         )
 
+    def test_failed_client_tests_are_diagnosed_and_still_fail_the_job(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        step = re.search(r"(?ms)^      - name: Compile client and run its tests\n(?P<body>.*?)(?=^      - name: )", text)
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        self.assertIn("--no-tests=error", body)
+        self.assertIn("$ctestCode = $LASTEXITCODE", body)
+        self.assertIn("LastTestsFailed.log", body)
+        self.assertIn("Get-WinEvent", body)
+        self.assertIn("craft-test-$name.log", body)
+        # The diagnostics must never turn a failing CTest run into a pass.
+        self.assertRegex(body, r"(?s)if \(\$ctestCode -ne 0\) \{.*exit \$ctestCode\s*\n\s*\}")
+        self.assertNotIn("continue-on-error", body)
+
     def test_dependency_build_is_resumable_across_six_hour_runner_windows(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(f"actions/cache/restore@{CACHE_SHA}", text)
