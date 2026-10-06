@@ -382,6 +382,18 @@ jobs:
           Get-Content $log -Tail 70
           if ($code -ne 0) { throw "Client compilation failed: $code" }
           $testDir = "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/build/nextcloud-client/work/build"
+          # Run CTest in the environment upstream's Windows CI uses (windows-2022:
+          # Windows Server build 20348 with a UTC clock). windows-11-arm is a
+          # Windows 11 client image with a non-UTC zone, where Qt picks the
+          # windows11 widget style (translucent #E4000000 text palette) and two
+          # upstream tests fail on platform assumptions, not on ARM64 code:
+          # SystraySyncControlQtTest compares tinted icon alpha with an opaque
+          # glyph, and DateFieldBackend's min/max msecs setters convert UTC
+          # midnight in local time. Tests themselves are unchanged.
+          $runnerTimeZone = (Get-TimeZone).Id
+          Write-Host "Runner time zone: $runnerTimeZone; running CTest with UTC and the windowsvista style"
+          Set-TimeZone -Id 'UTC'
+          $env:QT_STYLE_OVERRIDE = 'windowsvista'
           $testsStarted = Get-Date
           & ctest --test-dir $testDir --output-on-failure --no-tests=error --timeout 300
           $ctestCode = $LASTEXITCODE
@@ -413,8 +425,10 @@ jobs:
               Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
               Select-Object -First 20 | Format-List TimeCreated, ProviderName, Message | Out-Host
             Write-Host '::endgroup::'
-            exit $ctestCode
           }
+          Remove-Item Env:QT_STYLE_OVERRIDE
+          Set-TimeZone -Id $runnerTimeZone
+          if ($ctestCode -ne 0) { exit $ctestCode }
       - name: Validate native binaries and package installer
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
