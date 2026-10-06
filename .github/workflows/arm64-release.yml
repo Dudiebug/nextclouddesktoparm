@@ -165,7 +165,7 @@ jobs:
           # Blueprint fixes are idempotent and also applied to restored
           # workspaces, so a fix for a later checkpoint reaches blueprints
           # restored from an earlier checkpoint.
-          python '.github/scripts/patch-kde-blueprints-arm64.py' "$kde/libs/libjpeg-turbo/libjpeg-turbo.py" "$kde/libs/pixman/pixman.py" "$nextcloud/libs/libp11/libp11.py"
+          python '.github/scripts/patch-kde-blueprints-arm64.py' "$kde/libs/libjpeg-turbo/libjpeg-turbo.py" "$kde/libs/pixman/pixman.py" "$nextcloud/libs/libp11/libp11.py" "$kde/libs/qt6/qttools/qttools.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($name in @('craft-blueprints-kde', 'craft-blueprints-nextcloud')) {
             $directory = Join-Path $locations $name

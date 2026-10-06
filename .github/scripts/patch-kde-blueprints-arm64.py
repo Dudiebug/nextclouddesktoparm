@@ -105,10 +105,51 @@ def patch_libp11(path):
     print(f"Patched {path}: link libp11 for Windows ARM64")
 
 
+def patch_qttools(path):
+    s, line_ending = _read_normalized(path)
+
+    if "-DFEATURE_clang=OFF\", \"-DFEATURE_clangcpp=OFF\"]  # Windows ARM64" in s:
+        print(f"SKIP {path}: Windows ARM64 LLVM patch already present")
+        return
+
+    # qttools only needs libs/llvm for qdoc and the clang-based lupdate parser,
+    # which the client does not use. x64 gets LLVM from the binary cache, but
+    # ARM64 has no cache and building LLVM from source consumes most of a
+    # six-hour runner window (run 37434281380). Lupdate, lrelease and the
+    # other Linguist tools do not need clang.
+    dep_needle = '        self.runtimeDependencies["libs/llvm"] = None\n'
+    dep_replacement = (
+        '        from CraftCompiler import CraftCompiler\n'
+        '        if not (CraftCore.compiler.isWindows and CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64):\n'
+        '            self.runtimeDependencies["libs/llvm"] = None\n'
+    )
+    if s.count(dep_needle) != 1:
+        raise RuntimeError("qttools libs/llvm dependency changed upstream")
+    s = s.replace(dep_needle, dep_replacement, 1)
+
+    init_needle = (
+        'class Package(CraftPackageObject.get("libs/qt6").pattern):\n'
+        '    def __init__(self, **kwargs):\n'
+        '        super().__init__(**kwargs)\n'
+    )
+    init_replacement = init_needle + (
+        '        from CraftCompiler import CraftCompiler\n'
+        '        if CraftCore.compiler.isWindows and CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
+        '            self.subinfo.options.configure.args += ["-DFEATURE_clang=OFF", "-DFEATURE_clangcpp=OFF"]  # Windows ARM64\n'
+    )
+    if init_needle not in s:
+        raise RuntimeError("qttools Package block changed upstream")
+    s = s.replace(init_needle, init_replacement, 1)
+
+    _write_preserving_line_endings(path, s, line_ending)
+    print(f"Patched {path}: build qttools without LLVM for Windows ARM64")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: patch-kde-blueprints-arm64.py <libjpeg-turbo.py> <pixman.py> <libp11.py>")
+    if len(sys.argv) != 5:
+        print("Usage: patch-kde-blueprints-arm64.py <libjpeg-turbo.py> <pixman.py> <libp11.py> <qttools.py>")
         sys.exit(2)
     patch_libjpeg(sys.argv[1])
     patch_pixman(sys.argv[2])
     patch_libp11(sys.argv[3])
+    patch_qttools(sys.argv[4])
