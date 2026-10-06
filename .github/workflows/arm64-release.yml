@@ -381,8 +381,40 @@ jobs:
           $code = $LASTEXITCODE
           Get-Content $log -Tail 70
           if ($code -ne 0) { throw "Client compilation failed: $code" }
-          & ctest --test-dir "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/build/nextcloud-client/work/build" --output-on-failure --no-tests=error --timeout 300
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testDir = "$env:GITHUB_WORKSPACE/$env:CRAFT_TARGET/build/nextcloud-client/work/build"
+          $testsStarted = Get-Date
+          & ctest --test-dir $testDir --output-on-failure --no-tests=error --timeout 300
+          $ctestCode = $LASTEXITCODE
+          if ($ctestCode -ne 0) {
+            # Diagnostics only: the gate below still fails the job. Re-run each
+            # failed test directly so its exit code, QtTest output and any
+            # Windows crash report reach the log even when ctest captured none.
+            $failedList = Join-Path $testDir 'Testing/Temporary/LastTestsFailed.log'
+            if (Test-Path $failedList) {
+              foreach ($entry in Get-Content $failedList) {
+                $name = ($entry -split ':', 2)[-1].Trim()
+                $exe = Join-Path $testDir "bin/$name.exe"
+                if (-not (Test-Path $exe)) { Write-Host "No executable for failed test $name"; continue }
+                Write-Host "::group::Diagnostics for failed test $name"
+                $report = Join-Path $env:RUNNER_TEMP "craft-test-$name.log"
+                $env:QT_FORCE_STDERR_LOGGING = '1'
+                Push-Location (Join-Path $testDir 'bin')
+                & $exe -o "$report,txt" -v2 2>&1 | Out-Host
+                $code = $LASTEXITCODE
+                Pop-Location
+                Remove-Item Env:QT_FORCE_STDERR_LOGGING
+                Write-Host ("{0} exit code: {1} (0x{1:X8})" -f $name, $code)
+                if (Test-Path $report) { Get-Content $report | Out-Host } else { Write-Host 'QtTest wrote no report file' }
+                Write-Host '::endgroup::'
+              }
+            }
+            Write-Host '::group::Windows application errors during tests'
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $testsStarted } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
+              Select-Object -First 20 | Format-List TimeCreated, ProviderName, Message | Out-Host
+            Write-Host '::endgroup::'
+            exit $ctestCode
+          }
       - name: Validate native binaries and package installer
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
