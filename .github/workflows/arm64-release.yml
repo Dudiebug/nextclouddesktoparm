@@ -95,6 +95,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python '.github/scripts/patch_msvc_toolset_arm64.py' (Join-Path $clone 'bin/CraftCompiler.py')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python '.github/scripts/patch_download_retry_arm64.py' (Join-Path $clone 'bin/Utils/GetFiles.py')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python '.github/scripts/patch-nsis-and-blueprint.py' $clone
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git -C $clone config user.name 'ARM64 Build Bot'
