@@ -198,3 +198,7 @@ theme.qrc
 
 # Swift Package Manager Build Artifacts
 .swiftpm_codeql_detected_source_root
+
+# Python bytecode from build-script tests
+__pycache__/
+*.pyc
