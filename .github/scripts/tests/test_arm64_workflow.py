@@ -92,6 +92,15 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertLess(reuse, patch)
         self.assertIn('"$nextcloud/libs/libp11/libp11.py"', text)
         self.assertIn('"$kde/libs/qt6/qttools/qttools.py"', text)
+        self.assertIn('"$nextcloud/nextcloud-client/nextcloud-client.py"', text)
+
+    def test_nsis_is_installed_before_the_installer_is_packaged(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        nsis = text.index("-c 'dev-utils/nsis'")
+        package = text.index("--package nextcloud-client")
+        self.assertLess(text.index("- name: Validate native binaries and package installer"), nsis)
+        self.assertLess(nsis, package)
+        self.assertIn('throw "NSIS installation failed: $LASTEXITCODE"', text)
 
     def test_cross_commit_checkpoint_fallback_is_limited_to_stable_branches(self):
         text = WORKFLOW.read_text(encoding="utf-8")

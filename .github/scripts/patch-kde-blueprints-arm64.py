@@ -4,6 +4,7 @@
 
 """Apply Windows ARM64 fixes to stable Nextcloud/KDE Craft blueprints."""
 
+import re
 import sys
 
 
@@ -179,11 +180,33 @@ def patch_qttools(path):
     print(f"Patched {path}: build qttools without LLVM for Windows ARM64")
 
 
+def patch_nextcloud_client_imports(path):
+    s, line_ending = _read_normalized(path)
+
+    if re.search(r"(?m)^import os$", s):
+        print(f"SKIP {path}: os import already present")
+        return
+
+    # createPackage() calls os.path.join(), but the blueprint relies on
+    # "from Package.CMakePackageBase import *" for os, which the pinned Craft
+    # revision no longer re-exports (run 37515196377: NameError: name 'os' is
+    # not defined). The packaging fixes from patch-nsis-and-blueprint.py also
+    # use os. This runs on restored workspaces too, unlike that one-time patch.
+    needle = "import info\n"
+    if not s.startswith(needle) and f"\n{needle}" not in s:
+        raise RuntimeError("nextcloud-client import block changed upstream")
+    s = re.sub(r"(?m)^import info$", "import info\nimport os", s, count=1)
+
+    _write_preserving_line_endings(path, s, line_ending)
+    print(f"Patched {path}: import os for createPackage()")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        print("Usage: patch-kde-blueprints-arm64.py <libjpeg-turbo.py> <pixman.py> <libp11.py> <qttools.py>")
+    if len(sys.argv) != 6:
+        print("Usage: patch-kde-blueprints-arm64.py <libjpeg-turbo.py> <pixman.py> <libp11.py> <qttools.py> <nextcloud-client.py>")
         sys.exit(2)
     patch_libjpeg(sys.argv[1])
     patch_pixman(sys.argv[2])
     patch_libp11(sys.argv[3])
     patch_qttools(sys.argv[4])
+    patch_nextcloud_client_imports(sys.argv[5])
