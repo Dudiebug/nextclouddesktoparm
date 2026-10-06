@@ -125,4 +125,4 @@ jobs:
 
           # Pushes made by GITHUB_TOKEN do not recursively trigger workflows.
           # Dispatch the build explicitly on the newly-created source branch.
-          gh workflow run arm64-release.yml --ref "$ARM_BRANCH"
+          gh workflow run arm64-release.yml --repo "$GITHUB_REPOSITORY" --ref "$ARM_BRANCH"
