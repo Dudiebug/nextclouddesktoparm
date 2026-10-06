@@ -76,6 +76,18 @@ jobs:
             exit 0
           fi
 
+          # Every ARM64 build saves multi-GB dependency checkpoints, and the
+          # repository's Actions cache is limited to 10 GB. A second build that
+          # starts while another is running evicts that build's checkpoints
+          # (canary run 37479310476 did this to arm64/stable-34.0 on 2026-10-06),
+          # so wait for the next scheduled run instead.
+          active_builds="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/arm64-release.yml/runs?per_page=50" \
+            --jq '[.workflow_runs[] | select(.status != "completed") | select(.head_branch | startswith("canary/") | not) | "\(.id) on \(.head_branch)"] | join(", ")')"
+          if [[ -n "$active_builds" && -z "${FORCE_VERSION:-}" ]]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deferring $arm_branch while ARM64 builds are running: $active_builds"
+            exit 0
+          fi
           echo "build=true" >> "$GITHUB_OUTPUT"
 
       - name: Create ARM64 branch from the exact upstream release tag
