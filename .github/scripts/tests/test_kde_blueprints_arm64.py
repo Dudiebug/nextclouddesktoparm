@@ -328,7 +328,9 @@ class KdeBlueprintPatchTests(unittest.TestCase):
             path = Path(directory) / "nextcloud-client.py"
             self._write(path, NEXTCLOUD_CLIENT, "\n")
             nsis.patch_blueprint(str(path))
-            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            # patch_blueprint() writes in text mode, so the file already has CRLF
+            # on Windows and LF elsewhere; normalise before converting to CRLF.
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
             module.patch_nextcloud_client_imports(path)
             data = path.read_bytes()
             self.assertIn(b"import info\r\nimport os\r\n", data)
