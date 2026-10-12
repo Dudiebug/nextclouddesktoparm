@@ -106,6 +106,26 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertLess(nsis, package)
         self.assertIn('throw "NSIS installation failed: $LASTEXITCODE"', text)
 
+    def test_checkpoint_fingerprint_covers_dependency_build_inputs(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        # Not the commit: a later commit with unchanged tooling must resume.
+        self.assertNotIn("ARM64_CACHE_FINGERPRINT: ${{ github.sha }}", text)
+        step = re.search(
+            r"(?ms)^      - name: Fingerprint the dependency build inputs\n(?P<body>.*?)(?=^      - name: )",
+            text,
+        )
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        for path in ("'craftmaster.ini'", "'.github/scripts/**'", "'.github/workflows/arm64-release.yml'"):
+            self.assertIn(path, body)
+        self.assertIn('"ARM64_CACHE_FINGERPRINT=$fingerprint" >> $env:GITHUB_ENV', body)
+        self.assertIn("throw", body)
+        # Bytecode written by the regression tests must not change the hash,
+        # and every cache step must see the fingerprint.
+        fingerprint = text.index("- name: Fingerprint the dependency build inputs")
+        self.assertLess(fingerprint, text.index("- name: Run build-script regression tests"))
+        self.assertLess(fingerprint, text.index("actions/cache/restore@"))
+
     def test_cross_commit_checkpoint_fallback_is_limited_to_stable_branches(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         restore = re.search(r"(?ms)restore-keys: \|\n(?P<keys>(?:^            .*\n)+)", text)
