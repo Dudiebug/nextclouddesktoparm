@@ -26,7 +26,6 @@ jobs:
       CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
       CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster-arm64.ini
       PIP_USE_DEPRECATED: legacy-certs
-      ARM64_CACHE_FINGERPRINT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -35,6 +34,19 @@ jobs:
         with:
           python-version: '3.12'
           architecture: arm64
+      - name: Fingerprint the dependency build inputs
+        # Checkpoints are keyed on everything that decides how dependencies are
+        # built (upstream craftmaster.ini pins, patch scripts, this workflow),
+        # not on the commit. A later commit on the same branch that leaves
+        # these inputs unchanged (for example after a run hit the 360-minute
+        # job limit) resumes from that branch's exact checkpoints, because
+        # re-running or dispatching a run is not always available. Computed
+        # before the regression tests write bytecode under .github/scripts.
+        run: |
+          $fingerprint = '${{ hashFiles('craftmaster.ini', '.github/scripts/**', '.github/workflows/arm64-release.yml') }}'
+          if ($fingerprint -notmatch '^[0-9a-f]{64}$') { throw "Invalid dependency fingerprint: $fingerprint" }
+          Write-Host "Dependency build fingerprint: $fingerprint"
+          "ARM64_CACHE_FINGERPRINT=$fingerprint" >> $env:GITHUB_ENV
       - name: Run build-script regression tests
         run: |
           python -m unittest discover -s .github/scripts/tests -v
@@ -123,9 +135,10 @@ jobs:
             ${{ github.workspace }}\craftmaster-arm64.ini
             ${{ github.workspace }}\${{ env.CRAFT_TARGET }}
           key: arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-complete
-          # Exact-sha checkpoints first. On arm64/stable-* only, fall back to the
-          # newest checkpoint from an earlier commit of the same branch so a
-          # tooling fix for a late checkpoint does not force a full rebuild.
+          # Checkpoints with this exact dependency fingerprint first. On
+          # arm64/stable-* only, fall back to the newest checkpoint of the same
+          # branch so a tooling fix for a late checkpoint does not force a full
+          # rebuild.
           # Release branches (arm64/v*) never use the fallback and always build
           # every dependency from source with their own tooling.
           restore-keys: |
