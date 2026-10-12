@@ -77,7 +77,11 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertEqual(packages[-1], "libs/zlib")
         for tool in ("dev-utils/cmake", "dev-utils/ninja", "dev-utils/patch"):
             self.assertIn(tool, packages)
-        verify = body.index("Join-Path $root 'lib/zlib.lib'")
+        # The checked import library is the one Craft's Python blueprint links.
+        name = body.index("arm64_zlib.py' $pythonBlueprint")
+        verify = body.index('Join-Path $root "lib/$zlibName"')
+        self.assertLess(name, verify)
+        self.assertNotIn("lib/zlib.lib", body)
         resume = body.index("foreach ($package in @('libs/zlib', 'libs/openssl'))")
         self.assertLess(bootstrap, verify)
         self.assertLess(verify, resume)

@@ -197,17 +197,24 @@ jobs:
             exit 0
           }
           # libs/zlib -> virtual/base -> libs/python, and the MSVC Python build
-          # links lib/zlib.lib. Resolving zlib normally therefore builds Python
-          # before zlib exists. Bootstrap zlib and its build tools with
-          # virtual/base ignored, prove zlib.lib exists, then resume normal
-          # dependency resolution from libs/zlib so openssl still precedes Python.
+          # links zlib's import library. Resolving zlib normally therefore builds
+          # Python before zlib exists. Bootstrap zlib and its build tools with
+          # virtual/base ignored, prove the import library Python links exists
+          # (zlib.lib with zlib 1.3.1, zlib1.lib with Craft's zlib 1.3.2), then
+          # resume normal dependency resolution from libs/zlib so openssl still
+          # precedes Python.
+          $pythonBlueprint = Join-Path $env:GITHUB_WORKSPACE 'craft-clone/blueprints/libs/python/python.py'
+          $zlibName = (python '.github/scripts/arm64_zlib.py' $pythonBlueprint)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $zlibName = "$zlibName".Trim()
+          Write-Host "Craft's Python build links lib/$zlibName"
           $bootstrap = @('--options', 'virtual/base.ignored=True')
           foreach ($package in @('dev-utils/cmake', 'dev-utils/ninja', 'dev-utils/patch', 'libs/zlib')) {
             Write-Host "Bootstrapping ARM64 dependency without virtual/base: $package"
             & python "$env:CRAFT_MASTER_LOCATION/CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c @bootstrap $package
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          $zlibLib = Join-Path $root 'lib/zlib.lib'
+          $zlibLib = Join-Path $root "lib/$zlibName"
           if (-not (Test-Path $zlibLib)) { throw "zlib bootstrap did not produce $zlibLib" }
           Write-Host "Verified $zlibLib"
           foreach ($package in @('libs/zlib', 'libs/openssl')) {
