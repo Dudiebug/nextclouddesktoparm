@@ -27,18 +27,30 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(step)
         body = step.group("body")
         self.assertIn("--no-tests=error", body)
-        self.assertIn("$ctestCode = $LASTEXITCODE", body)
+        self.assertIn("$passCode = $LASTEXITCODE", body)
         self.assertIn("LastTestsFailed.log", body)
         self.assertIn("Get-WinEvent", body)
         self.assertIn("craft-test-$name.log", body)
-        # The diagnostics must never turn a failing CTest run into a pass.
-        self.assertRegex(body, r"(?m)^\s*if \(\$ctestCode -ne 0\) \{ exit \$ctestCode \}\s*$")
-        # Tests run in upstream's Windows CI environment (UTC clock, windowsvista
-        # style) and the runner's own time zone is restored afterwards.
+        # ctest output must reach the log, not the function's return value.
+        self.assertIn("@selection | Out-Host", body)
+        # Tests run in upstream's Windows CI environment (UTC clock) and the
+        # runner's own time zone is restored afterwards.
         self.assertLess(body.index("Set-TimeZone -Id 'UTC'"), body.index("& ctest"))
-        self.assertLess(body.index("$env:QT_STYLE_OVERRIDE = 'windowsvista'"), body.index("& ctest"))
         self.assertIn("Set-TimeZone -Id $runnerTimeZone", body)
-        self.assertLess(body.index("Set-TimeZone -Id $runnerTimeZone"), body.index("{ exit $ctestCode }"))
+        # Widget tests get the windowsvista style; Qt Quick Controls tests run
+        # without it, because QApplication's styleOverride would also become
+        # their QML style. Both passes gate the job.
+        self.assertIn("$quickControlsTests = @('SharingDialogTest')", body)
+        self.assertIn("if ($vistaStyle) { $env:QT_STYLE_OVERRIDE = 'windowsvista' }", body)
+        widget = body.index("Invoke-CTestPass 'widget style' @('-E', $quickControlsPattern) $true")
+        quick = body.index("Invoke-CTestPass 'Qt Quick Controls' @('-R', $quickControlsPattern) $false")
+        restore = body.index("Set-TimeZone -Id $runnerTimeZone")
+        self.assertLess(widget, quick)
+        self.assertLess(quick, restore)
+        # The diagnostics must never turn a failing CTest run into a pass.
+        self.assertRegex(body, r"(?m)^\s*if \(\$widgetCode -ne 0\) \{ exit \$widgetCode \}\s*$")
+        self.assertRegex(body, r"(?m)^\s*if \(\$quickCode -ne 0\) \{ exit \$quickCode \}\s*$")
+        self.assertLess(restore, body.index("{ exit $widgetCode }"))
         self.assertNotIn("continue-on-error", body)
 
     def test_dependency_build_is_resumable_across_six_hour_runner_windows(self):
