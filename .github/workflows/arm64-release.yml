@@ -410,45 +410,64 @@ jobs:
           # SystraySyncControlQtTest compares tinted icon alpha with an opaque
           # glyph, and DateFieldBackend's min/max msecs setters convert UTC
           # midnight in local time. Tests themselves are unchanged.
+          #
+          # QT_STYLE_OVERRIDE selects the windowsvista widget style, but
+          # QApplication also keeps it in QGuiApplicationPrivate::styleOverride,
+          # which Qt Quick Controls prefers over QT_QUICK_CONTROLS_STYLE as its
+          # QML style. Tests that create Qt Quick Controls under QApplication
+          # then fail with 'module "windowsvista" is not installed', which
+          # upstream (no override at all) never sees. Those tests run in a
+          # second pass without the override; both passes gate the job.
+          $quickControlsTests = @('SharingDialogTest')
+          $quickControlsPattern = '^(' + (($quickControlsTests | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
           $runnerTimeZone = (Get-TimeZone).Id
-          Write-Host "Runner time zone: $runnerTimeZone; running CTest with UTC and the windowsvista style"
+          Write-Host "Runner time zone: $runnerTimeZone; running CTest with UTC"
           Set-TimeZone -Id 'UTC'
-          $env:QT_STYLE_OVERRIDE = 'windowsvista'
-          $testsStarted = Get-Date
-          & ctest --test-dir $testDir --output-on-failure --no-tests=error --timeout 300
-          $ctestCode = $LASTEXITCODE
-          if ($ctestCode -ne 0) {
-            # Diagnostics only: the gate below still fails the job. Re-run each
-            # failed test directly so its exit code, QtTest output and any
-            # Windows crash report reach the log even when ctest captured none.
-            $failedList = Join-Path $testDir 'Testing/Temporary/LastTestsFailed.log'
-            if (Test-Path $failedList) {
-              foreach ($entry in Get-Content $failedList) {
-                $name = ($entry -split ':', 2)[-1].Trim()
-                $exe = Join-Path $testDir "bin/$name.exe"
-                if (-not (Test-Path $exe)) { Write-Host "No executable for failed test $name"; continue }
-                Write-Host "::group::Diagnostics for failed test $name"
-                $report = Join-Path $env:RUNNER_TEMP "craft-test-$name.log"
-                $env:QT_FORCE_STDERR_LOGGING = '1'
-                Push-Location (Join-Path $testDir 'bin')
-                & $exe -o "$report,txt" -v2 2>&1 | Out-Host
-                $code = $LASTEXITCODE
-                Pop-Location
-                Remove-Item Env:QT_FORCE_STDERR_LOGGING
-                Write-Host ("{0} exit code: {1} (0x{1:X8})" -f $name, $code)
-                if (Test-Path $report) { Get-Content $report | Out-Host } else { Write-Host 'QtTest wrote no report file' }
-                Write-Host '::endgroup::'
+          function Invoke-CTestPass([string]$label, [string[]]$selection, [bool]$vistaStyle) {
+            if ($vistaStyle) { $env:QT_STYLE_OVERRIDE = 'windowsvista' } else { Remove-Item Env:QT_STYLE_OVERRIDE -ErrorAction SilentlyContinue }
+            Write-Host "CTest pass '$label' (windowsvista style override: $vistaStyle)"
+            $testsStarted = Get-Date
+            & ctest --test-dir $testDir --output-on-failure --no-tests=error --timeout 300 @selection | Out-Host
+            $passCode = $LASTEXITCODE
+            if ($passCode -ne 0) {
+              # Diagnostics only: the gate below still fails the job. Re-run each
+              # failed test directly, in the same environment, so its exit code,
+              # QtTest output and any Windows crash report reach the log even
+              # when ctest captured none.
+              $failedList = Join-Path $testDir 'Testing/Temporary/LastTestsFailed.log'
+              if (Test-Path $failedList) {
+                foreach ($entry in Get-Content $failedList) {
+                  $name = ($entry -split ':', 2)[-1].Trim()
+                  $exe = Join-Path $testDir "bin/$name.exe"
+                  if (-not (Test-Path $exe)) { Write-Host "No executable for failed test $name"; continue }
+                  Write-Host "::group::Diagnostics for failed test $name"
+                  $report = Join-Path $env:RUNNER_TEMP "craft-test-$name.log"
+                  $env:QT_FORCE_STDERR_LOGGING = '1'
+                  Push-Location (Join-Path $testDir 'bin')
+                  & $exe -o "$report,txt" -v2 2>&1 | Out-Host
+                  $code = $LASTEXITCODE
+                  Pop-Location
+                  Remove-Item Env:QT_FORCE_STDERR_LOGGING
+                  Write-Host ("{0} exit code: {1} (0x{1:X8})" -f $name, $code)
+                  if (Test-Path $report) { Get-Content $report | Out-Host } else { Write-Host 'QtTest wrote no report file' }
+                  Write-Host '::endgroup::'
+                }
               }
+              Write-Host '::group::Windows application errors during tests'
+              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $testsStarted } -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
+                Select-Object -First 20 | Format-List TimeCreated, ProviderName, Message | Out-Host
+              Write-Host '::endgroup::'
             }
-            Write-Host '::group::Windows application errors during tests'
-            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $testsStarted } -ErrorAction SilentlyContinue |
-              Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
-              Select-Object -First 20 | Format-List TimeCreated, ProviderName, Message | Out-Host
-            Write-Host '::endgroup::'
+            Remove-Item Env:QT_STYLE_OVERRIDE -ErrorAction SilentlyContinue
+            return $passCode
           }
-          Remove-Item Env:QT_STYLE_OVERRIDE
+          $widgetCode = [int](Invoke-CTestPass 'widget style' @('-E', $quickControlsPattern) $true)
+          # --no-tests=error also fails this pass if a listed test disappears.
+          $quickCode = [int](Invoke-CTestPass 'Qt Quick Controls' @('-R', $quickControlsPattern) $false)
           Set-TimeZone -Id $runnerTimeZone
-          if ($ctestCode -ne 0) { exit $ctestCode }
+          if ($widgetCode -ne 0) { exit $widgetCode }
+          if ($quickCode -ne 0) { exit $quickCode }
       - name: Validate native binaries and package installer
         run: |
           $root = Join-Path $env:GITHUB_WORKSPACE $env:CRAFT_TARGET
