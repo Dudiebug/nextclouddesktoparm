@@ -418,7 +418,9 @@ jobs:
           # then fail with 'module "windowsvista" is not installed', which
           # upstream (no override at all) never sees. Those tests run in a
           # second pass without the override; both passes gate the job.
-          $quickControlsTests = @('SharingDialogTest')
+          # WindowCloseQmlTest (new in 35.0.1) is the only QQuickTest runner
+          # that creates a QApplication (upstream 07a115a2), so it belongs here.
+          $quickControlsTests = @('SharingDialogTest', 'WindowCloseQmlTest')
           $quickControlsPattern = '^(' + (($quickControlsTests | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
           $runnerTimeZone = (Get-TimeZone).Id
           Write-Host "Runner time zone: $runnerTimeZone; running CTest with UTC"
@@ -431,25 +433,22 @@ jobs:
             $passCode = $LASTEXITCODE
             if ($passCode -ne 0) {
               # Diagnostics only: the gate below still fails the job. Re-run each
-              # failed test directly, in the same environment, so its exit code,
-              # QtTest output and any Windows crash report reach the log even
-              # when ctest captured none.
+              # failed test through ctest, so it gets its own command line
+              # (QQuickTest runners need their -input file), working directory
+              # and ENVIRONMENT, with Qt messages forced to stderr. Without a
+              # console Qt sends them to OutputDebugString and ctest captures
+              # nothing (WindowCloseQmlTest in run 40950535696).
               $failedList = Join-Path $testDir 'Testing/Temporary/LastTestsFailed.log'
               if (Test-Path $failedList) {
                 foreach ($entry in Get-Content $failedList) {
                   $name = ($entry -split ':', 2)[-1].Trim()
-                  $exe = Join-Path $testDir "bin/$name.exe"
-                  if (-not (Test-Path $exe)) { Write-Host "No executable for failed test $name"; continue }
                   Write-Host "::group::Diagnostics for failed test $name"
                   $report = Join-Path $env:RUNNER_TEMP "craft-test-$name.log"
                   $env:QT_FORCE_STDERR_LOGGING = '1'
-                  Push-Location (Join-Path $testDir 'bin')
-                  & $exe -o "$report,txt" -v2 2>&1 | Out-Host
+                  & ctest --test-dir $testDir -V --timeout 300 -R ('^' + [regex]::Escape($name) + '$') 2>&1 | Tee-Object -FilePath $report | Out-Host
                   $code = $LASTEXITCODE
-                  Pop-Location
                   Remove-Item Env:QT_FORCE_STDERR_LOGGING
-                  Write-Host ("{0} exit code: {1} (0x{1:X8})" -f $name, $code)
-                  if (Test-Path $report) { Get-Content $report | Out-Host } else { Write-Host 'QtTest wrote no report file' }
+                  Write-Host ("{0} re-run ctest exit code: {1}" -f $name, $code)
                   Write-Host '::endgroup::'
                 }
               }

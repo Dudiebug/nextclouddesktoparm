@@ -40,7 +40,7 @@ class Arm64WorkflowTests(unittest.TestCase):
         # Widget tests get the windowsvista style; Qt Quick Controls tests run
         # without it, because QApplication's styleOverride would also become
         # their QML style. Both passes gate the job.
-        self.assertIn("$quickControlsTests = @('SharingDialogTest')", body)
+        self.assertIn("$quickControlsTests = @('SharingDialogTest', 'WindowCloseQmlTest')", body)
         self.assertIn("if ($vistaStyle) { $env:QT_STYLE_OVERRIDE = 'windowsvista' }", body)
         widget = body.index("Invoke-CTestPass 'widget style' @('-E', $quickControlsPattern) $true")
         quick = body.index("Invoke-CTestPass 'Qt Quick Controls' @('-R', $quickControlsPattern) $false")
@@ -52,6 +52,11 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertRegex(body, r"(?m)^\s*if \(\$quickCode -ne 0\) \{ exit \$quickCode \}\s*$")
         self.assertLess(restore, body.index("{ exit $widgetCode }"))
         self.assertNotIn("continue-on-error", body)
+        # Failed tests are re-run through ctest with their own arguments and
+        # ENVIRONMENT, not as a bare executable, and Qt logs go to stderr.
+        self.assertIn("& ctest --test-dir $testDir -V --timeout 300 -R ('^' + [regex]::Escape($name) + '$')", body)
+        self.assertIn("$env:QT_FORCE_STDERR_LOGGING = '1'", body)
+        self.assertNotIn("& $exe", body)
 
     def test_dependency_build_is_resumable_across_six_hour_runner_windows(self):
         text = WORKFLOW.read_text(encoding="utf-8")
