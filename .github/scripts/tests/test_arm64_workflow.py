@@ -147,6 +147,12 @@ class Arm64WorkflowTests(unittest.TestCase):
         self.assertIn("startsWith(github.ref, 'refs/heads/arm64/stable-') && 'arm64-deps-'", keys[1])
         self.assertIn("format('arm64-deps-{0}-phase-', env.ARM64_CACHE_FINGERPRINT)", keys[1])
 
+    def test_craftmaster_is_cloned_from_kdes_github_mirror(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        # Upstream's Windows CI moved off invent.kde.org in fcae51f9.
+        self.assertIn("git clone --depth=1 'https://github.com/KDE/craftmaster.git'", text)
+        self.assertNotIn("invent.kde.org/packaging/craftmaster", text)
+
 
 if __name__ == "__main__":
     unittest.main()
