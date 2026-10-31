@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: 2026 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+from pathlib import Path
+import re
+import unittest
+
+
+WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "arm64-release.yml"
+CACHE_SHA = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+
+
+class Arm64WorkflowTests(unittest.TestCase):
+    def test_pip_legacy_certs_is_inherited_by_all_craft_subprocesses(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        job = re.search(r"(?ms)^  build-release:\n(?P<body>.*?)(?=^  \S|\Z)", text)
+        self.assertIsNotNone(job)
+        env = re.search(r"(?ms)^    env:\n(?P<body>(?:^      .*\n)+)", job.group("body"))
+        self.assertIsNotNone(env)
+        self.assertRegex(
+            env.group("body"),
+            r"(?m)^      PIP_USE_DEPRECATED:\s*legacy-certs\s*$",
+        )
+
+    def test_failed_client_tests_are_diagnosed_and_still_fail_the_job(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        step = re.search(r"(?ms)^      - name: Compile client and run its tests\n(?P<body>.*?)(?=^      - name: )", text)
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        self.assertIn("--no-tests=error", body)
+        self.assertIn("$passCode = $LASTEXITCODE", body)
+        self.assertIn("LastTestsFailed.log", body)
+        self.assertIn("Get-WinEvent", body)
+        self.assertIn("craft-test-$name.log", body)
+        # ctest output must reach the log, not the function's return value.
+        self.assertIn("@selection | Out-Host", body)
+        # Tests run in upstream's Windows CI environment (UTC clock) and the
+        # runner's own time zone is restored afterwards.
+        self.assertLess(body.index("Set-TimeZone -Id 'UTC'"), body.index("& ctest"))
+        self.assertIn("Set-TimeZone -Id $runnerTimeZone", body)
+        # Widget tests get the windowsvista style; Qt Quick Controls tests run
+        # without it, because QApplication's styleOverride would also become
+        # their QML style. Both passes gate the job.
+        self.assertIn("$quickControlsTests = @('SharingDialogTest', 'WindowCloseQmlTest')", body)
+        self.assertIn("if ($vistaStyle) { $env:QT_STYLE_OVERRIDE = 'windowsvista' }", body)
+        widget = body.index("Invoke-CTestPass 'widget style' @('-E', $quickControlsPattern) $true")
+        quick = body.index("Invoke-CTestPass 'Qt Quick Controls' @('-R', $quickControlsPattern) $false")
+        restore = body.index("Set-TimeZone -Id $runnerTimeZone")
+        self.assertLess(widget, quick)
+        self.assertLess(quick, restore)
+        # The diagnostics must never turn a failing CTest run into a pass.
+        self.assertRegex(body, r"(?m)^\s*if \(\$widgetCode -ne 0\) \{ exit \$widgetCode \}\s*$")
+        self.assertRegex(body, r"(?m)^\s*if \(\$quickCode -ne 0\) \{ exit \$quickCode \}\s*$")
+        self.assertLess(restore, body.index("{ exit $widgetCode }"))
+        self.assertNotIn("continue-on-error", body)
+        # Failed tests are re-run through ctest with their own arguments and
+        # ENVIRONMENT, not as a bare executable, and Qt logs go to stderr.
+        self.assertIn("& ctest --test-dir $testDir -V --timeout 300 -R ('^' + [regex]::Escape($name) + '$')", body)
+        self.assertIn("$env:QT_FORCE_STDERR_LOGGING = '1'", body)
+        self.assertNotIn("& $exe", body)
+
+    def test_dependency_build_is_resumable_across_six_hour_runner_windows(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(f"actions/cache/restore@{CACHE_SHA}", text)
+        self.assertGreaterEqual(text.count(f"actions/cache/save@{CACHE_SHA}"), 5)
+        self.assertIn("arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-", text)
+        self.assertIn(".arm64-dependency-checkpoints", text)
+        for package in (
+            "dev-utils/cmake",
+            "libs/qt6/qtbase",
+            "libs/qt6/qtdeclarative",
+            "libs/qt6/qtwebsockets",
+            "libs/qt/qtsvg",
+            "libs/qt6/qt5compat",
+            "libs/libp11",
+            "libs/kdsingleapplication",
+            "qt-libs/qtkeychain",
+            "kde/frameworks/tier1/karchive",
+            "libs/openssl",
+        ):
+            self.assertIn(package, text)
+
+    def test_zlib_is_bootstrapped_before_virtual_base_resolves_python(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        step = re.search(
+            r"(?ms)^      - name: Build dependency checkpoint 01 - foundation\n(?P<body>.*?)(?=^      - name: )",
+            text,
+        )
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        bootstrap = body.index("virtual/base.ignored=True")
+        tools = re.search(r"foreach \(\$package in @\((?P<list>[^)]*)\)\) \{\s*\n\s*Write-Host \"Bootstrapping", body)
+        self.assertIsNotNone(tools)
+        packages = re.findall(r"'([^']+)'", tools.group("list"))
+        self.assertEqual(packages[-1], "libs/zlib")
+        for tool in ("dev-utils/cmake", "dev-utils/ninja", "dev-utils/patch"):
+            self.assertIn(tool, packages)
+        # The checked import library is the one Craft's Python blueprint links.
+        name = body.index("arm64_zlib.py' $pythonBlueprint")
+        verify = body.index('Join-Path $root "lib/$zlibName"')
+        self.assertLess(name, verify)
+        self.assertNotIn("lib/zlib.lib", body)
+        resume = body.index("foreach ($package in @('libs/zlib', 'libs/openssl'))")
+        self.assertLess(bootstrap, verify)
+        self.assertLess(verify, resume)
+        self.assertIn("@bootstrap $package", body)
+        # The normal resolution must not carry the virtual/base override.
+        self.assertNotIn("bootstrap", body[resume:])
+
+    def test_blueprint_fixes_reach_restored_workspaces(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        reuse = text.index('Write-Host "Reusing restored ARM64 Craft dependency workspace."')
+        patch = text.index("patch-kde-blueprints-arm64.py")
+        self.assertLess(reuse, patch)
+        self.assertIn('"$nextcloud/libs/libp11/libp11.py"', text)
+        self.assertIn('"$kde/libs/qt6/qttools/qttools.py"', text)
+        self.assertIn('"$nextcloud/nextcloud-client/nextcloud-client.py"', text)
+
+    def test_nsis_is_installed_before_the_installer_is_packaged(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        nsis = text.index("-c 'dev-utils/nsis'")
+        package = text.index("--package nextcloud-client")
+        self.assertLess(text.index("- name: Validate native binaries and package installer"), nsis)
+        self.assertLess(nsis, package)
+        self.assertIn('throw "NSIS installation failed: $LASTEXITCODE"', text)
+
+    def test_checkpoint_fingerprint_covers_dependency_build_inputs(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        # Not the commit: a later commit with unchanged tooling must resume.
+        self.assertNotIn("ARM64_CACHE_FINGERPRINT: ${{ github.sha }}", text)
+        step = re.search(
+            r"(?ms)^      - name: Fingerprint the dependency build inputs\n(?P<body>.*?)(?=^      - name: )",
+            text,
+        )
+        self.assertIsNotNone(step)
+        body = step.group("body")
+        for path in ("'craftmaster.ini'", "'.github/scripts/**'", "'.github/workflows/arm64-release.yml'"):
+            self.assertIn(path, body)
+        self.assertIn('"ARM64_CACHE_FINGERPRINT=$fingerprint" >> $env:GITHUB_ENV', body)
+        self.assertIn("throw", body)
+        # Bytecode written by the regression tests must not change the hash,
+        # and every cache step must see the fingerprint.
+        fingerprint = text.index("- name: Fingerprint the dependency build inputs")
+        self.assertLess(fingerprint, text.index("- name: Run build-script regression tests"))
+        self.assertLess(fingerprint, text.index("actions/cache/restore@"))
+
+    def test_cross_commit_checkpoint_fallback_is_limited_to_stable_branches(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        restore = re.search(r"(?ms)restore-keys: \|\n(?P<keys>(?:^            .*\n)+)", text)
+        self.assertIsNotNone(restore)
+        keys = restore.group("keys").splitlines()
+        self.assertEqual(keys[0].strip(), "arm64-deps-${{ env.ARM64_CACHE_FINGERPRINT }}-phase-")
+        self.assertIn("startsWith(github.ref, 'refs/heads/arm64/stable-') && 'arm64-deps-'", keys[1])
+        self.assertIn("format('arm64-deps-{0}-phase-', env.ARM64_CACHE_FINGERPRINT)", keys[1])
+
+    def test_craftmaster_is_cloned_from_kdes_github_mirror(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        # Upstream's Windows CI moved off invent.kde.org in fcae51f9.
+        self.assertIn("git clone --depth=1 'https://github.com/KDE/craftmaster.git'", text)
+        self.assertNotIn("invent.kde.org/packaging/craftmaster", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
