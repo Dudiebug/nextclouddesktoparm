@@ -14,7 +14,7 @@
 
 **The release page is the source of truth for available installers.** A source branch or a running workflow does not mean an installer is ready.
 
-The update to **Nextcloud Desktop 35.0.2** is being built on [`arm64/v35.0.2`](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64/v35.0.2). Do not treat it as a published or tested Windows ARM64 release until its installer appears in Releases. The previous published build is `v35.0.1-arm64`.
+The update to **Nextcloud Desktop 35.0.2** is being built on [`arm64/v35.0.2`](https://github.com/Dudiebug/nextclouddesktoparm/tree/arm64/v35.0.2). Its ARM64 dependencies have been built; do not treat it as a published or tested Windows ARM64 release until its installer appears in Releases. The previous published build is `v35.0.1-arm64`.
 
 ## What is this project?
 
