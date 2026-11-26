@@ -202,3 +202,7 @@ theme.qrc
 # Nix
 result
 flake.lock
+
+# Python bytecode from build-script tests
+__pycache__/
+*.pyc
