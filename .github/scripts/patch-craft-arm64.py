@@ -166,92 +166,28 @@ with open(openssl_path, 'w', encoding='utf-8') as f:
     f.write(s.replace(old_openssl, new_openssl))
 print(f'Patched {openssl_path}: openssl Configure target VC-WIN64-ARM for arm64')
 
-# Patch 6: libs/liblzma/liblzma.py — xz 5.2.3's windows/ project files
-# only declare Win32, x64, and ReleaseMT|x64 platform configurations.
-# On a Windows ARM64 host MSBuild rejects /p:Platform=arm64 with
-# MSB4126 "The specified solution configuration 'Release|arm64' is
-# invalid". xz itself is pure C with no x86-specific assembly, so
-# cloning the x64 sections of xz_win.sln, liblzma.vcxproj, and
-# liblzma_dll.vcxproj as arm64 siblings is sufficient. Inject a
-# configure() override into PackageMSBuild that does the cloning
-# right before MSBuild runs.
+# Patch 6: libs/liblzma/liblzma.py. Older Craft revisions build xz 5.2.3
+# from windows/xz_win.sln, whose project files only declare Win32 and x64:
+# MSBuild rejects /p:Platform=arm64 with MSB4126. arm64_lzma clones the x64
+# configurations as arm64 siblings. From Craft 6e684481 liblzma is a CMake
+# package for xz 5.8.4, which supports MSVC ARM64 natively and needs no patch.
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import arm64_lzma
+
 with open(liblzma_path, 'r', encoding='utf-8') as f:
     s = f.read()
-old_liblzma = (
-    'class PackageMSBuild(MSBuildPackageBase):\n'
-    '    def __init__(self, **kwargs):\n'
-    '        super().__init__(**kwargs)\n'
-    '        self.subinfo.options.configure.projectFile = self.sourceDir() / "windows/xz_win.sln"\n'
-    '        self.msbuildTargets = ["liblzma_dll"]\n'
-    '\n'
-    '    def install(self):\n'
-)
-new_liblzma = (
-    'class PackageMSBuild(MSBuildPackageBase):\n'
-    '    def __init__(self, **kwargs):\n'
-    '        super().__init__(**kwargs)\n'
-    '        self.subinfo.options.configure.projectFile = self.sourceDir() / "windows/xz_win.sln"\n'
-    '        self.msbuildTargets = ["liblzma_dll"]\n'
-    '\n'
-    '    def configure(self):\n'
-    '        # The xz 5.2.3 windows/ project files only declare Win32, x64, and\n'
-    '        # ReleaseMT|x64 platform configurations. On a Windows ARM64 host\n'
-    '        # MSBuild rejects /p:Platform=arm64 (the platform Craft passes for\n'
-    '        # an arm64 target) with MSB4126 "The specified solution\n'
-    '        # configuration \'Release|arm64\' is invalid". xz itself is pure C\n'
-    '        # with no x86-specific inline assembly, so cloning the x64 sections\n'
-    '        # of xz_win.sln, liblzma.vcxproj, and liblzma_dll.vcxproj as arm64\n'
-    '        # siblings is sufficient: MSBuild\'s v143 toolset handles arm64\n'
-    '        # codegen automatically once an arm64 platform is declared.\n'
-    '        from CraftCompiler import CraftCompiler\n'
-    '        if CraftCore.compiler.architecture == CraftCompiler.Architecture.arm64:\n'
-    '            self._addArm64PlatformConfigs()\n'
-    '        return super().configure()\n'
-    '\n'
-    '    def _addArm64PlatformConfigs(self):\n'
-    '        import re\n'
-    '        windowsDir = self.sourceDir() / "windows"\n'
-    '        slnPath = windowsDir / "xz_win.sln"\n'
-    '        with open(slnPath, "r", encoding="utf-8", newline="") as f:\n'
-    '            slnLines = f.readlines()\n'
-    '        if not any("|arm64" in ln for ln in slnLines):\n'
-    '            outLines = []\n'
-    '            for ln in slnLines:\n'
-    '                outLines.append(ln)\n'
-    '                if "|x64" in ln:\n'
-    '                    outLines.append(ln.replace("|x64", "|arm64"))\n'
-    '            with open(slnPath, "w", encoding="utf-8", newline="") as f:\n'
-    '                f.writelines(outLines)\n'
-    '        # Non-greedy block regex: capture each top-level XML element whose\n'
-    '        # opening tag mentions "|x64" (in either an Include= or Condition=\n'
-    '        # attribute) and clone it as an arm64 sibling. The .vcxproj files\n'
-    '        # have no nested elements of the same name at the relevant depths,\n'
-    '        # so a non-greedy match is unambiguous.\n'
-    '        blockPattern = re.compile(r"(  <(\\w+)[^>]*\\|x64[^>]*>[\\s\\S]*?</\\2>)")\n'
-    '        for vcxproj in ("liblzma.vcxproj", "liblzma_dll.vcxproj"):\n'
-    '            path = windowsDir / vcxproj\n'
-    '            with open(path, "r", encoding="utf-8", newline="") as f:\n'
-    '                content = f.read()\n'
-    '            if "|arm64" in content:\n'
-    '                continue\n'
-    '            def cloneBlock(m):\n'
-    '                orig = m.group(1)\n'
-    '                cloned = (\n'
-    '                    orig.replace("|x64", "|arm64")\n'
-    '                        .replace("<Platform>x64</Platform>", "<Platform>arm64</Platform>")\n'
-    '                )\n'
-    '                return orig + "\\n" + cloned\n'
-    '            with open(path, "w", encoding="utf-8", newline="") as f:\n'
-    '                f.write(blockPattern.sub(cloneBlock, content))\n'
-    '\n'
-    '    def install(self):\n'
-)
-if old_liblzma not in s:
-    print('ERROR: could not find PackageMSBuild __init__/install block in liblzma.py', file=sys.stderr)
+try:
+    s_new, liblzma_changed = arm64_lzma.patch_liblzma_blueprint(s)
+except ValueError as error:
+    print(f'ERROR: {liblzma_path}: {error}', file=sys.stderr)
     sys.exit(1)
-with open(liblzma_path, 'w', encoding='utf-8') as f:
-    f.write(s.replace(old_liblzma, new_liblzma))
-print(f'Patched {liblzma_path}: PackageMSBuild.configure() clones x64 platform configs as arm64')
+if liblzma_changed:
+    with open(liblzma_path, 'w', encoding='utf-8') as f:
+        f.write(s_new)
+    print(f'Patched {liblzma_path}: PackageMSBuild.configure() clones x64 platform configs as arm64')
+else:
+    print(f'Left {liblzma_path} unchanged: CMake xz build supports MSVC ARM64')
 
 # Patch 7: libs/libunistring/libunistring.py
 import stat, textwrap
@@ -406,3 +342,22 @@ for old_ref, new_ref in [
 with open(python_path, 'w', encoding='utf-8') as f:
     f.write(s)
 print(f'Patched {python_path}: PCbuild/amd64 -> PCbuild/{{pcbuildArch}} in install()')
+
+# Patch 10: libs/python/python.py links the import library liblzma installs.
+# xz >= 5.6.3 built with CMake and MSVC installs lib/lzma.lib (DLL still
+# liblzma.dll); Nextcloud's Craft 6e684481 kept addLib("LZMA", "liblzma").
+with open(python_path, 'r', encoding='utf-8') as f:
+    s = f.read()
+with open(liblzma_path, 'r', encoding='utf-8') as f:
+    liblzma_source = f.read()
+try:
+    s_new, python_changed = arm64_lzma.patch_python_lzma_link(s, liblzma_source)
+except ValueError as error:
+    print(f'ERROR: {python_path}: {error}', file=sys.stderr)
+    sys.exit(1)
+if python_changed:
+    with open(python_path, 'w', encoding='utf-8') as f:
+        f.write(s_new)
+    print(f'Patched {python_path}: MSVC Python links lib/{arm64_lzma.liblzma_import_library(liblzma_source)}.lib')
+else:
+    print(f'Left {python_path} LZMA link unchanged: lib/{arm64_lzma.liblzma_import_library(liblzma_source)}.lib')
